@@ -111,6 +111,8 @@ async fn renderer_produces_real_sync_fds() {
                 width: 640,
                 height: 480,
                 refresh_mhz: 60_000,
+                drm_render_major: 0,
+                drm_render_minor: 0,
                 properties: Vec::new(),
             },
             &[],
@@ -121,10 +123,15 @@ async fn renderer_produces_real_sync_fds() {
             "expected display_accepted, got {accepted:?}"
         );
 
-        // bind_buffers (real dma-buf fds from the renderer)
+        // bind_buffers (real dma-buf fds from the renderer). The
+        // daemon may rebind mid-stream when it promotes the renderer to
+        // HOST_VISIBLE for a cross-GPU consumer (this test reports
+        // drm_render = 0:0, i.e. unknown, which is treated as
+        // cross-GPU); track the *latest* generation so the gen-equality
+        // check on FrameReady stays sane after such a rebind.
         let (bind, bind_fds) = codec::recv_event(&stream)?;
         let Event::BindBuffers {
-            buffer_generation,
+            buffer_generation: initial_gen,
             count,
             planes_per_buffer,
             ..
@@ -132,6 +139,7 @@ async fn renderer_produces_real_sync_fds() {
         else {
             anyhow::bail!("expected bind_buffers");
         };
+        let mut buffer_generation = initial_gen;
         let expected_fds = (count * planes_per_buffer) as usize;
         anyhow::ensure!(
             bind_fds.len() == expected_fds,
@@ -206,8 +214,15 @@ async fn renderer_produces_real_sync_fds() {
                     )?;
                     frames_seen += 1;
                 }
-                Event::SetConfig { .. } | Event::BindBuffers { .. } => {
-                    // mid-session rebind or config update — fine, drop
+                Event::BindBuffers {
+                    buffer_generation: g, ..
+                } => {
+                    // The daemon promoted the renderer to HOST_VISIBLE
+                    // for cross-GPU; track the new generation.
+                    buffer_generation = g;
+                }
+                Event::SetConfig { .. } | Event::Unbind { .. } => {
+                    // config update / pre-rebind retire of old gen — fine, drop
                 }
                 other => anyhow::bail!("unexpected event: {other:?}"),
             }

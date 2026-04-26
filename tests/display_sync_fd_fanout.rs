@@ -45,6 +45,8 @@ fn run_client(sock: &PathBuf, name: &str, n_frames: usize) -> anyhow::Result<usi
             width: 640,
             height: 480,
             refresh_mhz: 60_000,
+            drm_render_major: 0,
+            drm_render_minor: 0,
             properties: Vec::new(),
         },
         &[],
@@ -52,9 +54,11 @@ fn run_client(sock: &PathBuf, name: &str, n_frames: usize) -> anyhow::Result<usi
     let (accepted, _) = codec::recv_event(&stream)?;
     anyhow::ensure!(matches!(accepted, Event::DisplayAccepted { .. }));
 
-    // bind_buffers
+    // bind_buffers — the daemon may rebind mid-stream when it promotes
+    // the renderer to HOST_VISIBLE, so track the *latest* generation
+    // we've seen rather than freezing the very first one.
     let (bind, bind_fds) = codec::recv_event(&stream)?;
-    let buffer_generation = match bind {
+    let mut buffer_generation = match bind {
         Event::BindBuffers { buffer_generation, .. } => buffer_generation,
         _ => anyhow::bail!("{name}: expected bind_buffers"),
     };
@@ -96,7 +100,18 @@ fn run_client(sock: &PathBuf, name: &str, n_frames: usize) -> anyhow::Result<usi
                 )?;
                 frames += 1;
             }
-            Event::SetConfig { .. } | Event::BindBuffers { .. } => {}
+            // Unbind/Bind/SetConfig may happen mid-stream when the
+            // daemon promotes the renderer to HOST_VISIBLE because the
+            // test display advertised an unknown GPU id (and is thus
+            // treated as cross-GPU). The fence-fanout assertion below
+            // doesn't care about the rebind sequence, only that real
+            // sync_fds reach both consumers — but we DO need to track
+            // the latest generation so the FrameReady gen-equality
+            // check stays sane after the rebind.
+            Event::BindBuffers { buffer_generation: g, .. } => {
+                buffer_generation = g;
+            }
+            Event::SetConfig { .. } | Event::Unbind { .. } => {}
             other => anyhow::bail!("{name}: unexpected {other:?}"),
         }
     }

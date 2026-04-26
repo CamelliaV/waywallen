@@ -608,20 +608,63 @@ uint32_t ww_req_shutdown_expected_fds(const ww_req_shutdown_t *m) {
     return 0;
 }
 
+int ww_req_configure_buffers_encode(const ww_req_configure_buffers_t *m, ww_buf_t *out) {
+    int rc;
+    (void)m;
+    if ((rc = w_u32(out, m->flags))) return rc;
+    return WW_OK;
+}
+
+int ww_req_configure_buffers_decode(const uint8_t *buf, size_t len, ww_req_configure_buffers_t *out) {
+    memset(out, 0, sizeof(*out));
+    ww_rd_t r = { buf, 0, len };
+    int rc;
+    if ((rc = rd_u32(&r, &out->flags))) goto fail;
+    if (r.pos != r.len) {
+        int rc2 = WW_ERR_TRAILING;
+        (void)rc2;
+        ww_req_configure_buffers_free(out);
+        return WW_ERR_TRAILING;
+    }
+    return WW_OK;
+fail:
+    ww_req_configure_buffers_free(out);
+    return rc;
+}
+
+void ww_req_configure_buffers_free(ww_req_configure_buffers_t *m) {
+    (void)m;
+}
+
+uint32_t ww_req_configure_buffers_expected_fds(const ww_req_configure_buffers_t *m) {
+    (void)m;
+    return 0;
+}
+
 int ww_evt_ready_encode(const ww_evt_ready_t *m, ww_buf_t *out) {
-    (void)m; (void)out;
+    int rc;
+    (void)m;
+    if ((rc = w_u32(out, m->drm_render_major))) return rc;
+    if ((rc = w_u32(out, m->drm_render_minor))) return rc;
     return WW_OK;
 }
 
 int ww_evt_ready_decode(const uint8_t *buf, size_t len, ww_evt_ready_t *out) {
     memset(out, 0, sizeof(*out));
     ww_rd_t r = { buf, 0, len };
-    (void)r;
+    int rc;
+    if ((rc = rd_u32(&r, &out->drm_render_major))) goto fail;
+    if ((rc = rd_u32(&r, &out->drm_render_minor))) goto fail;
     if (r.pos != r.len) {
-        /* empty message; no allocations to release */
+        int rc2 = WW_ERR_TRAILING;
+        (void)rc2;
+        ww_evt_ready_free(out);
         return WW_ERR_TRAILING;
     }
     return WW_OK;
+fail:
+    ww_evt_ready_free(out);
+    return rc;
 }
 
 void ww_evt_ready_free(ww_evt_ready_t *m) {
@@ -636,6 +679,8 @@ uint32_t ww_evt_ready_expected_fds(const ww_evt_ready_t *m) {
 int ww_evt_bind_buffers_encode(const ww_evt_bind_buffers_t *m, ww_buf_t *out) {
     int rc;
     (void)m;
+    if ((rc = w_u64(out, m->generation))) return rc;
+    if ((rc = w_u32(out, m->flags))) return rc;
     if ((rc = w_u32(out, m->count))) return rc;
     if ((rc = w_u32(out, m->fourcc))) return rc;
     if ((rc = w_u32(out, m->width))) return rc;
@@ -651,6 +696,8 @@ int ww_evt_bind_buffers_decode(const uint8_t *buf, size_t len, ww_evt_bind_buffe
     memset(out, 0, sizeof(*out));
     ww_rd_t r = { buf, 0, len };
     int rc;
+    if ((rc = rd_u64(&r, &out->generation))) goto fail;
+    if ((rc = rd_u32(&r, &out->flags))) goto fail;
     if ((rc = rd_u32(&r, &out->count))) goto fail;
     if ((rc = rd_u32(&r, &out->fourcc))) goto fail;
     if ((rc = rd_u32(&r, &out->width))) goto fail;

@@ -53,10 +53,13 @@ pub struct SpawnRequest {
 /// the host attached to it. Owned by the manager; display endpoints will
 /// `dup(2)` individual fds out of it when a new subscriber connects.
 pub struct BindSnapshot {
-    /// Monotonically increasing per-renderer pool generation. Starts at
-    /// 1 for the first `BindBuffers` and increments on every rebind.
-    /// Propagated as `buffer_generation` on the display wire.
+    /// Monotonically increasing per-renderer pool generation. Sourced
+    /// from the `bind_buffers.generation` field the renderer sets;
+    /// propagated as `buffer_generation` on the display wire.
     pub generation: u64,
+    /// Placement flag set the renderer used when allocating this pool.
+    /// Bit 0 = host_visible (GTT). See `BUF_HOST_VISIBLE`.
+    pub flags: u32,
     pub count: u32,
     pub fourcc: u32,
     pub width: u32,
@@ -66,6 +69,29 @@ pub struct BindSnapshot {
     pub plane_offset: u64,
     pub sizes: Vec<u64>,
     pub fds: Vec<OwnedFd>,
+}
+
+/// Bit 0 of `BindSnapshot::flags` / `ControlMsg::ConfigureBuffers.flags`:
+/// the renderer must back the dmabuf with HOST_VISIBLE memory (GTT/system
+/// RAM) so it can be PRIME-imported by another GPU. Cleared means the
+/// renderer is free to use DEVICE_LOCAL (VRAM) for zero-copy on same-GPU
+/// consumers.
+pub const BUF_HOST_VISIBLE: u32 = 1 << 0;
+
+/// DRM render-node identity reported by a renderer in its `Ready` event.
+/// `(0, 0)` is the sentinel for "renderer cannot resolve its render node",
+/// in which case the daemon must conservatively assume cross-GPU paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DrmNode {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl DrmNode {
+    pub const UNKNOWN: Self = Self { major: 0, minor: 0 };
+    pub fn is_known(&self) -> bool {
+        self.major != 0 || self.minor != 0
+    }
 }
 
 /// Upper bound on the number of per-seq sync_fd entries the reader
@@ -95,6 +121,14 @@ pub struct RendererHandle {
     /// `None` only if tokio could not return one (process already
     /// exited before id() was queried).
     pub pid: Option<u32>,
+    /// DRM render-node id of the GPU the renderer's Vulkan instance
+    /// picked. Reported in the renderer's `Ready` event. Used by the
+    /// router to decide whether each subscribed display is on the same
+    /// GPU (zero-copy) or a different GPU (must rebind via GTT). The
+    /// sentinel `DrmNode::UNKNOWN` (0, 0) means the driver lacks
+    /// `VK_EXT_physical_device_drm` and the daemon should assume
+    /// cross-GPU.
+    pub gpu: DrmNode,
 
     /// Blocking std UnixStream. Guarded by a std Mutex so HTTP handlers
     /// hold the lock only while a `sendmsg` is in flight; they spawn the
@@ -108,6 +142,13 @@ pub struct RendererHandle {
 
     /// Populated when the host sends its first `BindBuffers` event.
     bind_snapshot: Arc<StdMutex<Option<BindSnapshot>>>,
+
+    /// In-flight `ConfigureBuffers` request. `Some(flags)` while the
+    /// router has asked for a re-export and the renderer has not yet
+    /// answered with a fresh `BindBuffers` whose `flags` matches; reset
+    /// to `None` once the answering snapshot arrives. Guards the router
+    /// from issuing a second reconfigure on top of an in-flight one.
+    pending_configure: Arc<StdMutex<Option<u32>>>,
 
     /// Per-frame acquire fence file descriptors, indexed by `seq`.
     /// The reader thread stashes the `OwnedFd` that arrives with each
@@ -133,6 +174,24 @@ impl RendererHandle {
     /// first frame has been rendered and the fds arrived.
     pub fn bind_snapshot(&self) -> Arc<StdMutex<Option<BindSnapshot>>> {
         Arc::clone(&self.bind_snapshot)
+    }
+
+    /// Current placement flags from the latest `BindBuffers`, or 0 if
+    /// no snapshot has arrived yet. Used by the router to compare
+    /// against the desired flag set.
+    pub fn current_flags(&self) -> u32 {
+        self.bind_snapshot
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.flags))
+            .unwrap_or(0)
+    }
+
+    /// Whether a `ConfigureBuffers` request is currently in flight (sent
+    /// to the renderer but not yet answered with a matching new
+    /// `BindBuffers`). The router uses this to coalesce reconfigures.
+    pub fn pending_configure(&self) -> Option<u32> {
+        self.pending_configure.lock().ok().and_then(|g| *g)
     }
 
     /// Obtain a dup'd copy of the acquire sync_fd that arrived with
@@ -331,16 +390,30 @@ impl RendererManager {
         })
         .await
         .context("ready poll join")??;
-        if !matches!(ready.0, EventMsg::Ready) {
-            let _ = child.start_kill();
-            return Err(anyhow!(
-                "host emitted {:?} before Ready; aborting spawn",
-                ready.0
-            ));
-        }
+        let gpu = match ready.0 {
+            EventMsg::Ready {
+                drm_render_major,
+                drm_render_minor,
+            } => DrmNode {
+                major: drm_render_major,
+                minor: drm_render_minor,
+            },
+            other => {
+                let _ = child.start_kill();
+                return Err(anyhow!(
+                    "host emitted {:?} before Ready; aborting spawn",
+                    other
+                ));
+            }
+        };
         if !ready.1.is_empty() {
             log::warn!("Ready unexpectedly carried {} fds; dropping", ready.1.len());
         }
+        log::info!(
+            "renderer {id}: Ready (drm_render={}:{})",
+            gpu.major,
+            gpu.minor
+        );
 
         // Now wire up the permanent reader thread and store the handle.
         let (events_tx, _events_rx) = broadcast::channel::<EventMsg>(256);
@@ -348,12 +421,14 @@ impl RendererManager {
             Arc::new(StdMutex::new(None));
         let sync_fds: Arc<StdMutex<std::collections::VecDeque<(u64, OwnedFd)>>> =
             Arc::new(StdMutex::new(std::collections::VecDeque::new()));
+        let pending_configure: Arc<StdMutex<Option<u32>>> = Arc::new(StdMutex::new(None));
 
         let sock = Arc::new(StdMutex::new(std_stream));
         let reader_sock = sock.clone();
         let reader_events = events_tx.clone();
         let reader_snapshot = bind_snapshot.clone();
         let reader_sync_fds = sync_fds.clone();
+        let reader_pending = pending_configure.clone();
         let reader_id = id.clone();
         let reader_reap_tx = self.reap_tx.clone();
         thread::spawn(move || {
@@ -363,6 +438,7 @@ impl RendererManager {
                 reader_events,
                 reader_snapshot,
                 reader_sync_fds,
+                reader_pending,
                 reader_reap_tx,
             );
         });
@@ -376,10 +452,12 @@ impl RendererManager {
             metadata: req.metadata.clone(),
             name: renderer_def.name.clone(),
             pid: child_pid,
+            gpu,
             sock,
             events: events_tx,
             bind_snapshot,
             sync_fds,
+            pending_configure,
             child: Arc::new(TokioMutex::new(Some(child))),
         });
 
@@ -450,6 +528,36 @@ impl RendererManager {
                 Err(anyhow!("send_control: {e}"))
             }
         }
+    }
+
+    /// Ask the renderer to re-export its buffer pool with new placement
+    /// flags. Sets the renderer's `pending_configure` slot before
+    /// dispatching the wire message so the router doesn't double-fire
+    /// while the renderer is mid-rebuild. The renderer answers with a
+    /// fresh `BindBuffers { generation += 1, flags }` event which the
+    /// reader thread will broadcast and which clears `pending_configure`.
+    pub async fn send_configure_buffers(&self, id: &str, flags: u32) -> Result<()> {
+        let handle = self
+            .get(id)
+            .await
+            .ok_or_else(|| anyhow!("unknown renderer: {id}"))?;
+        if let Ok(mut guard) = handle.pending_configure.lock() {
+            *guard = Some(flags);
+        }
+        log::info!("renderer {id}: ConfigureBuffers(flags=0x{flags:x})");
+        if let Err(e) = self
+            .send_control(id, ControlMsg::ConfigureBuffers { flags })
+            .await
+        {
+            // Roll back the pending marker so a future retry can fire.
+            if let Ok(mut guard) = handle.pending_configure.lock() {
+                if guard.as_ref() == Some(&flags) {
+                    *guard = None;
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Enqueue a renderer for eviction. Synchronous (cheap channel
@@ -524,6 +632,7 @@ fn run_reader(
     events: broadcast::Sender<EventMsg>,
     bind_snapshot: Arc<StdMutex<Option<BindSnapshot>>>,
     sync_fds: Arc<StdMutex<std::collections::VecDeque<(u64, OwnedFd)>>>,
+    pending_configure: Arc<StdMutex<Option<u32>>>,
     reap_tx: tokio::sync::mpsc::UnboundedSender<RendererId>,
 ) {
     // Any exit path from this thread — clean EOF, recvmsg error, or
@@ -562,8 +671,13 @@ fn run_reader(
         };
         let (msg, fds) = received;
 
-        // If this is the first BindBuffers, cache it with its fds.
+        // Cache every BindBuffers with its fds. The renderer assigns the
+        // generation; subsequent bind_buffers (post-ConfigureBuffers
+        // re-export) replace the snapshot and retire prior acquire
+        // fences. Validates monotonicity defensively.
         if let EventMsg::BindBuffers {
+            generation,
+            flags,
             count,
             fourcc,
             width,
@@ -581,9 +695,17 @@ fn run_reader(
                     .lock()
                     .ok()
                     .and_then(|g| g.as_ref().map(|s| s.generation));
-                let generation = prev_gen.map_or(1, |g| g + 1);
+                if let Some(prev) = prev_gen {
+                    if generation <= prev {
+                        log::warn!(
+                            "renderer {id}: BindBuffers gen={generation} not > prev {prev}; \
+                             accepting anyway but display protocol expects monotonicity"
+                        );
+                    }
+                }
                 let snap = BindSnapshot {
                     generation,
+                    flags,
                     count,
                     fourcc,
                     width,
@@ -596,13 +718,35 @@ fn run_reader(
                 };
                 if let Ok(mut guard) = bind_snapshot.lock() {
                     *guard = Some(snap);
-                    log::info!("renderer {id}: BindBuffers cached (gen={generation})");
+                    log::info!(
+                        "renderer {id}: BindBuffers cached (gen={generation}, flags=0x{flags:x})"
+                    );
                 }
                 // A rebind retires any pending acquire fences — they
                 // belong to the previous buffer_generation and cannot
                 // be waited on against the new textures.
                 if let Ok(mut guard) = sync_fds.lock() {
                     guard.clear();
+                }
+                // Clear any in-flight ConfigureBuffers. We always clear,
+                // even if the renderer's `flags` differ from what we
+                // asked for — some renderers (mpv-via-GBM, wescene's
+                // ExSwapchain) only support the HOST_VISIBLE/LINEAR
+                // path and physically can't downgrade to DEVICE_LOCAL.
+                // Leaving pending_configure set after such a "best
+                // effort" answer would just keep `reconcile_buffer_flags`
+                // skipping the renderer forever. A warn log makes the
+                // mismatch visible.
+                if let Ok(mut guard) = pending_configure.lock() {
+                    if let Some(want) = guard.take() {
+                        if want != flags {
+                            log::warn!(
+                                "renderer {id}: ConfigureBuffers asked for \
+                                 flags=0x{want:x} but renderer answered \
+                                 with flags=0x{flags:x}; accepting"
+                            );
+                        }
+                    }
                 }
             }
         } else if let EventMsg::FrameReady { seq, .. } = msg {
@@ -700,10 +844,12 @@ impl RendererHandle {
             metadata: HashMap::new(),
             name: "test-stub".into(),
             pid: None,
+            gpu: DrmNode::UNKNOWN,
             sock: Arc::new(StdMutex::new(a)),
             events: events_tx,
             bind_snapshot: Arc::new(StdMutex::new(None)),
             sync_fds: Arc::new(StdMutex::new(std::collections::VecDeque::new())),
+            pending_configure: Arc::new(StdMutex::new(None)),
             child: Arc::new(TokioMutex::new(None)),
         })
     }

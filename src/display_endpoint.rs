@@ -183,6 +183,8 @@ async fn do_handshake(
         width,
         height,
         refresh_mhz,
+        drm_render_major,
+        drm_render_minor,
         properties,
     } = reg
     else {
@@ -191,11 +193,18 @@ async fn do_handshake(
             reg.opcode()
         ));
     };
+    log::info!(
+        "display register: {name} {width}x{height}@{refresh_mhz}mHz drm_render={drm_render_major}:{drm_render_minor}"
+    );
     Ok(DisplayRegistration {
         name,
         width,
         height,
         refresh_mhz,
+        gpu: crate::renderer_manager::DrmNode {
+            major: drm_render_major,
+            minor: drm_render_minor,
+        },
         properties,
     })
 }
@@ -513,6 +522,7 @@ mod tests {
 
         let snap = BindSnapshot {
             generation: 7,
+            flags: 0,
             count: 2,
             fourcc: 0x34325258,
             width: 800,

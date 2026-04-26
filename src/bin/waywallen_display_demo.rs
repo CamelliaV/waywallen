@@ -165,6 +165,10 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
             width: args.width,
             height: args.height,
             refresh_mhz: args.refresh_mhz,
+            // Demo client doesn't import dmabufs; advertise UNKNOWN to
+            // force the daemon onto the conservative cross-GPU path.
+            drm_render_major: 0,
+            drm_render_minor: 0,
             properties: Vec::new(),
         },
         &[],

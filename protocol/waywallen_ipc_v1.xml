@@ -31,9 +31,17 @@
   Invariants:
 
     - The first Event from the subprocess MUST be `ready`.
-    - The subprocess MUST emit exactly one `bind_buffers` over the
-      lifetime of a renderer; daemon caches the fds for late display
-      subscribers.
+    - The subprocess MUST emit at least one `bind_buffers` once Vulkan
+      buffer slots have been allocated. The daemon caches the fds and
+      `flags` of the latest snapshot for late display subscribers.
+    - The subprocess MAY emit additional `bind_buffers` events at any
+      later time (e.g. in response to a `configure_buffers` request).
+      Each new `bind_buffers` carries a strictly increasing `generation`
+      and implicitly retires every prior set; the daemon transparently
+      re-binds the new buffer pool to all currently subscribed displays.
+    - `frame_ready` events emitted *after* a `bind_buffers` belong to
+      that bind's `generation` and MUST NOT reference image_indices from
+      a retired generation.
     - Every `frame_ready` MUST carry exactly one acquire sync_fd
       (dma_fence sync_file). v1 does not support sync-less producers.
     - `seq` on `frame_ready` is monotonically increasing.
@@ -89,6 +97,30 @@
   -->
   <request name="shutdown" opcode="7"/>
 
+  <!--
+    Ask the subprocess to re-export its DMA-BUF pool with the requested
+    placement flags. The subprocess MUST eventually answer with a fresh
+    `bind_buffers` event that carries the same `flags` and a strictly
+    increasing `generation`; if the requested flags equal the current
+    flags the request is a no-op and may be ignored.
+
+    Flag bits (request and the matching `bind_buffers.flags`):
+      bit 0 = host_visible — back the dmabuf with HOST_VISIBLE memory
+              (typically GTT / system RAM). Required for cross-GPU PRIME
+              import when the consumer is on a different DRM render
+              node; otherwise foreign-GPU drivers fail validate with
+              -ENOMEM and lose their device on first submit.
+      bit 1.. — reserved, MUST be 0 in v1.
+
+    The daemon recomputes the desired flag set whenever the routing
+    topology changes (display attach/detach, link enable/disable) and
+    only emits this request when the desired set differs from the
+    snapshot's `flags` and no rebind is already in flight.
+  -->
+  <request name="configure_buffers" opcode="8">
+    <arg name="flags" type="u32"/>
+  </request>
+
 
   <!-- ==================================================================
        EVENTS  (subprocess -> daemon)
@@ -96,18 +128,42 @@
 
   <!--
     Emitted once the subprocess has finished initializing Vulkan and is
-    ready to receive control messages. No fds.
+    ready to receive control messages. The DRM render-node major/minor
+    of the VkPhysicalDevice the subprocess picked are reported so the
+    daemon can decide whether displays subscribed to this renderer are
+    on the same GPU (zero-copy via DEVICE_LOCAL) or a different GPU
+    (must round-trip through HOST_VISIBLE / GTT).
+
+    A subprocess that cannot resolve its render node (driver lacks
+    `VK_EXT_physical_device_drm`) MUST send `(0, 0)`; the daemon then
+    treats every consumer as cross-GPU and forces host-visible
+    placement.
   -->
-  <event name="ready" opcode="1"/>
+  <event name="ready" opcode="1">
+    <arg name="drm_render_major" type="u32"/>
+    <arg name="drm_render_minor" type="u32"/>
+  </event>
 
   <!--
-    Sent exactly once, after the first successful render, carrying the
-    full set of swapchain image fds as SCM_RIGHTS ancillary data. fds
-    live for the lifetime of the subprocess.
+    Carries the full set of swapchain image fds as SCM_RIGHTS ancillary
+    data. The first `bind_buffers` follows shortly after `ready`;
+    subsequent ones follow a `configure_buffers` request from the
+    daemon (see Invariants). Each bind_buffers retires every prior
+    generation. fds live for the lifetime of the snapshot.
+
+    `generation` is strictly monotonic per renderer (starts at 1 for
+    the first bind, +1 for each subsequent re-export).
+
+    `flags` is the current placement flag set the subprocess used when
+    allocating the exported memory; mirrors the `flags` of the
+    `configure_buffers` request that triggered the re-export. See
+    `configure_buffers` for bit semantics.
 
     `count` fds are attached.
   -->
   <event name="bind_buffers" opcode="2">
+    <arg name="generation" type="u64"/>
+    <arg name="flags" type="u32"/>
     <arg name="count" type="u32"/>
     <arg name="fourcc" type="u32"/>
     <arg name="width" type="u32"/>

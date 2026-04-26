@@ -333,6 +333,8 @@ mod tests {
         let fd_to_send: RawFd = f.as_raw_fd();
 
         let sent = Event::BindBuffers {
+            generation: 1,
+            flags: 0,
             count: 1,
             fourcc: 0x34324152, // 'AR24'
             width: 1280,

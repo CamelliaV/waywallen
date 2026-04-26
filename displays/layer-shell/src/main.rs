@@ -663,6 +663,11 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
             width,
             height,
             refresh_mhz: 60_000,
+            // layer-shell hands the dmabuf to the compositor (which
+            // imports on its own GPU); we don't introspect that here,
+            // so report unknown and let the daemon force HOST_VISIBLE.
+            drm_render_major: 0,
+            drm_render_minor: 0,
             properties: Vec::new(),
         },
         &[],

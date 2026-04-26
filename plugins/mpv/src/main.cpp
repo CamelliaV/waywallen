@@ -33,6 +33,8 @@
 
 #include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 namespace {
@@ -449,7 +451,25 @@ struct HostState {
     std::mutex            send_mu; // serializes sendmsg on `sock`
     std::atomic<bool>     shutdown { false };
     std::atomic<uint64_t> seq { 0 };
+    // bind_buffers generation: monotonic, bumped on every fresh
+    // BindBuffers we emit. Initial bind = 1; subsequent re-emits
+    // (after ConfigureBuffers) increment. Held under send_mu.
+    uint64_t              bind_generation { 0 };
+    // Mirrors the Slot pool's actual placement. GBM-allocated LINEAR
+    // BOs land in GTT (host-visible from the kernel's POV) on every
+    // driver we care about, so the pool is *always* PRIME-importable
+    // by a foreign GPU. We therefore advertise BUF_HOST_VISIBLE
+    // unconditionally: the GBM path simply doesn't expose a knob to
+    // force DEVICE_LOCAL/VRAM placement, so a daemon ConfigureBuffers
+    // request for flags=0 is best-effort acknowledged by re-emitting
+    // bind_buffers carrying the *actual* flags=BUF_HOST_VISIBLE.
+    uint32_t              flags { 1u /* BUF_HOST_VISIBLE */ };
 };
+
+// Bit set passed on the wire as `bind_buffers.flags` and on
+// `configure_buffers.flags`. Local mirror of the daemon-side constant
+// so we don't pull in extra headers.
+static constexpr uint32_t WW_BUF_HOST_VISIBLE = 1u << 0;
 
 void wake_up(WakeState& w) {
     {
@@ -467,7 +487,12 @@ void send_bind(HostState& s, const Options& opt, GlCtx& gl) {
         fds[i]   = gl.slots[i].dmabuf_fd;
     }
 
+    std::lock_guard<std::mutex> lock(s.send_mu);
+    s.bind_generation += 1;
+
     ww_evt_bind_buffers_t bb {};
+    bb.generation   = s.bind_generation;
+    bb.flags        = s.flags;
     bb.count        = SLOT_COUNT;
     bb.fourcc       = DRM_FORMAT_ABGR8888;
     bb.width        = opt.width;
@@ -478,7 +503,6 @@ void send_bind(HostState& s, const Options& opt, GlCtx& gl) {
     bb.sizes.count  = SLOT_COUNT;
     bb.sizes.data   = sizes;
 
-    std::lock_guard<std::mutex> lock(s.send_mu);
     int rc = ww_bridge_send_bind_buffers(s.sock, &bb, fds);
     if (rc != 0) die("send bind_buffers failed: " + std::to_string(rc));
 }
@@ -517,7 +541,8 @@ void send_frame(HostState& s, GlCtx& gl, uint32_t slot) {
 // Control reader
 // ---------------------------------------------------------------------------
 
-void apply_control(HostState& s, MpvState& m, const ww_bridge_control_t& c) {
+void apply_control(HostState& s, MpvState& m, const Options& opt, GlCtx& gl,
+                   const ww_bridge_control_t& c) {
     switch (c.op) {
     case WW_REQ_HELLO:
         break;
@@ -546,6 +571,23 @@ void apply_control(HostState& s, MpvState& m, const ww_bridge_control_t& c) {
     case WW_REQ_SHUTDOWN:
         s.shutdown.store(true, std::memory_order_release);
         break;
+    case WW_REQ_CONFIGURE_BUFFERS:
+        // GBM/LINEAR is intrinsically GTT (host-visible); we cannot
+        // physically downgrade to DEVICE_LOCAL. Acknowledge the
+        // request by re-emitting bind_buffers with a bumped generation
+        // — the wire `flags` field will report what we actually have
+        // (BUF_HOST_VISIBLE), and the daemon's reader thread will
+        // clear pending_configure with a warn log if that doesn't
+        // match what was asked for.
+        if (c.u.configure_buffers.flags != s.flags) {
+            std::fprintf(stderr,
+                         "waywallen-mpv-renderer: ConfigureBuffers asked for "
+                         "flags=0x%x but we can only do flags=0x%x (GBM LINEAR "
+                         "→ GTT); answering with current placement\n",
+                         c.u.configure_buffers.flags, s.flags);
+        }
+        send_bind(s, opt, gl);
+        break;
     default:
         std::fprintf(stderr,
                      "waywallen-mpv-renderer: unknown control op %d\n",
@@ -554,7 +596,8 @@ void apply_control(HostState& s, MpvState& m, const ww_bridge_control_t& c) {
     }
 }
 
-void reader_loop(HostState& s, MpvState& m, WakeState& wake) {
+void reader_loop(HostState& s, MpvState& m, const Options& opt, GlCtx& gl,
+                 WakeState& wake) {
     while (!s.shutdown.load(std::memory_order_acquire)) {
         ww_bridge_control_t msg {};
         int                 rc = ww_bridge_recv_control(s.sock, &msg);
@@ -568,7 +611,7 @@ void reader_loop(HostState& s, MpvState& m, WakeState& wake) {
             wake_up(wake);
             return;
         }
-        apply_control(s, m, msg);
+        apply_control(s, m, opt, gl, msg);
         ww_bridge_control_free(&msg);
     }
 }
@@ -598,12 +641,32 @@ int main(int argc, char** argv) {
     if (host.sock < 0)
         die("ww_bridge_connect: " + std::string(std::strerror(-host.sock)));
 
-    if (int rc = ww_bridge_send_ready(host.sock); rc != 0)
+    // Resolve the DRM render-node major/minor from the GBM fd so the
+    // daemon can match the renderer's GPU against each connected
+    // display's GPU. fstat() on /dev/dri/renderD* gives `st_rdev`
+    // whose major/minor split is what we report on the wire. fstat
+    // failing is non-fatal — we'd report (0,0) and the daemon would
+    // conservatively force HOST_VISIBLE on every connected display
+    // (which we already are, so functionally a no-op).
+    uint32_t drm_render_major = 0, drm_render_minor = 0;
+    {
+        struct stat st;
+        if (gl.drm_fd >= 0 && ::fstat(gl.drm_fd, &st) == 0) {
+            drm_render_major = major(st.st_rdev);
+            drm_render_minor = minor(st.st_rdev);
+        }
+    }
+    if (int rc = ww_bridge_send_ready(host.sock,
+                                      drm_render_major, drm_render_minor);
+        rc != 0)
         die("send ready failed: " + std::to_string(rc));
+    std::fprintf(stderr,
+                 "waywallen-mpv-renderer: ready drm_render=%u:%u\n",
+                 drm_render_major, drm_render_minor);
 
     send_bind(host, opt, gl);
 
-    std::thread reader([&]() { reader_loop(host, mpv, wake); });
+    std::thread reader([&]() { reader_loop(host, mpv, opt, gl, wake); });
 
     uint32_t slot = 0;
     while (!host.shutdown.load(std::memory_order_acquire)) {

@@ -76,7 +76,7 @@ fn hello_handshake() {
         recv_event(&stream).expect("recv first frame from host");
     assert!(fds.is_empty(), "ready must not carry fds");
     match msg {
-        EventMsg::Ready => { /* ok */ }
+        EventMsg::Ready { .. } => { /* ok */ }
         other => panic!("expected Ready, got {other:?}"),
     }
 }
@@ -142,7 +142,7 @@ fn binding_and_frames_smoke() {
             }
         };
         match msg {
-            EventMsg::Ready => saw_ready = true,
+            EventMsg::Ready { .. } => saw_ready = true,
             EventMsg::BindBuffers {
                 count,
                 fourcc,
@@ -152,6 +152,7 @@ fn binding_and_frames_smoke() {
                 modifier,
                 plane_offset,
                 sizes,
+                ..
             } => {
                 eprintln!(
                     "BindBuffers: count={} fourcc=0x{:08x} {}x{} stride={} mod=0x{:x} \

@@ -34,7 +34,9 @@ const IDLE_KILL_TIMEOUT: Duration = Duration::from_secs(3600);
 const IDLE_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 
 use crate::ipc::proto::{ControlMsg, EventMsg};
-use crate::renderer_manager::{RendererHandle, RendererId, RendererManager};
+use crate::renderer_manager::{
+    DrmNode, RendererHandle, RendererId, RendererManager, BUF_HOST_VISIBLE,
+};
 use crate::scheduler::{DisplayId, DisplayInfo, ProjectedConfig};
 
 use super::table::{Link, LinkDstRect, LinkId, LinkSrcRect, RoutingTable};
@@ -69,6 +71,12 @@ pub struct DisplayRegistration {
     pub width: u32,
     pub height: u32,
     pub refresh_mhz: u32,
+    /// DRM render-node id of the GPU this display will sample dmabufs
+    /// on (i.e. the GPU backing the consumer's EGL/Vulkan context).
+    /// `DrmNode::UNKNOWN` means the consumer couldn't introspect its
+    /// backend and the router must conservatively assume a cross-GPU
+    /// path (force `BUF_HOST_VISIBLE` on every connected renderer).
+    pub gpu: DrmNode,
     pub properties: Vec<(String, String)>,
 }
 
@@ -169,6 +177,11 @@ pub struct DisplaySnapshot {
 
 struct DisplayState {
     info: DisplayInfo,
+    /// DRM render-node id of the consumer's GPU. Compared against
+    /// `RendererHandle::gpu` to decide whether dmabufs need to be
+    /// re-exported as HOST_VISIBLE (cross-GPU) or can stay
+    /// DEVICE_LOCAL (zero-copy).
+    gpu: DrmNode,
     tx: mpsc::UnboundedSender<DisplayOutEvent>,
     /// Last renderer this display was bound to (None if currently unbound).
     last_renderer: Option<RendererId>,
@@ -353,6 +366,7 @@ impl Router {
                 id,
                 DisplayState {
                     info,
+                    gpu: reg.gpu,
                     tx,
                     last_renderer: None,
                     last_buffer_generation: None,
@@ -366,6 +380,7 @@ impl Router {
         };
         self.sync_display(display_id).await;
         self.reconcile_lifecycle().await;
+        self.reconcile_buffer_flags().await;
         if let Some(snap) = self.snapshot_display(display_id).await {
             self.emit(RouterEvent::DisplayUpsert(snap));
         }
@@ -379,6 +394,7 @@ impl Router {
             inner.table.remove_display(display_id);
         }
         self.reconcile_lifecycle().await;
+        self.reconcile_buffer_flags().await;
         self.emit(RouterEvent::DisplayRemoved(display_id));
     }
 
@@ -626,6 +642,7 @@ impl Router {
         // renderer that no other display still uses immediately frees
         // its GPU resources.
         self.reap_orphans(Some(new_renderer_id)).await;
+        self.reconcile_buffer_flags().await;
         if !applied.is_empty() {
             let all = self.snapshot_displays().await;
             self.emit(RouterEvent::DisplaysReplace(all));
@@ -654,6 +671,7 @@ impl Router {
         // display dies right now. The new renderer is preserved by id
         // even if no displays were affected (0-display apply path).
         self.reap_orphans(Some(new_renderer_id)).await;
+        self.reconcile_buffer_flags().await;
         if had_ids {
             let all = self.snapshot_displays().await;
             self.emit(RouterEvent::DisplaysReplace(all));
@@ -735,6 +753,13 @@ impl Router {
         for did in display_ids {
             self.sync_display(did).await;
         }
+        // The first BindBuffers exposes the renderer's flags so the
+        // router can compare against the consumer set; subsequent ones
+        // (after a ConfigureBuffers) clear pending_configure inside
+        // the reader thread before this hook fires, so a re-evaluation
+        // here will compute a fresh diff if the topology meanwhile
+        // shifted again.
+        self.reconcile_buffer_flags().await;
     }
 
     async fn on_renderer_frame(
@@ -817,6 +842,73 @@ impl Router {
         for id in changed_ids {
             if let Some(snap) = self.snapshot_renderer(&id).await {
                 self.emit(RouterEvent::RendererUpsert(snap));
+            }
+        }
+    }
+
+    /// Recompute per-renderer dmabuf placement flags. For each renderer
+    /// that has a snapshot (i.e. has bound buffers at least once) and
+    /// has no in-flight reconfigure, decide whether any currently
+    /// enabled consumer is on a different GPU; if so the buffer pool
+    /// must be HOST_VISIBLE (GTT) so it can be PRIME-imported. If not,
+    /// the renderer is free to use DEVICE_LOCAL (VRAM) for zero-copy.
+    /// When the desired flag set differs from the snapshot's flags,
+    /// dispatch a `ConfigureBuffers` and let `pending_configure` keep
+    /// any second call coalesced. Call after any topology mutation
+    /// (display add/remove, link change, renderer bind).
+    async fn reconcile_buffer_flags(self: &Arc<Self>) {
+        let actions: Vec<(RendererId, u32)> = {
+            let inner = self.inner.lock().await;
+            let mut out = Vec::new();
+            for rid in inner.table.renderer_ids() {
+                let Some(renderer) = inner.table.get_renderer(&rid) else {
+                    continue;
+                };
+                if renderer.pending_configure().is_some() {
+                    continue;
+                }
+                // Skip until the renderer has produced its first bind.
+                let current_flags = match renderer
+                    .bind_snapshot()
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|s| s.flags))
+                {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let renderer_gpu = renderer.gpu;
+                let mut desired: u32 = 0;
+                for link in inner.table.links_for_renderer(&rid) {
+                    if !link.enabled {
+                        continue;
+                    }
+                    let Some(state) = inner.displays.get(&link.display_id) else {
+                        continue;
+                    };
+                    // Either side reporting UNKNOWN forces the conservative
+                    // host-visible path; otherwise compare render nodes.
+                    let cross_gpu = !renderer_gpu.is_known()
+                        || !state.gpu.is_known()
+                        || renderer_gpu != state.gpu;
+                    if cross_gpu {
+                        desired |= BUF_HOST_VISIBLE;
+                    }
+                }
+                if desired != current_flags {
+                    out.push((rid, desired));
+                }
+            }
+            out
+        };
+        for (rid, flags) in actions {
+            log::info!(
+                "router: renderer {rid} buffer_flags transition → 0x{flags:x}"
+            );
+            if let Err(e) = self.mgr.send_configure_buffers(&rid, flags).await {
+                log::warn!(
+                    "router: configure_buffers {rid} flags=0x{flags:x}: {e}"
+                );
             }
         }
     }
@@ -942,6 +1034,7 @@ mod tests {
             width: w,
             height: h,
             refresh_mhz: 60_000,
+            gpu: DrmNode::UNKNOWN,
             properties: vec![],
         }
     }

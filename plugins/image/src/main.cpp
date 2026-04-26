@@ -98,11 +98,128 @@ struct HostState {
     std::atomic<bool>     shutdown { false };
     std::mutex            wake_mu;
     std::condition_variable wake_cv;
+
+    // Producer + last-uploaded RGBA buffer + bind-buffers generation.
+    // Held under send_mu when used from apply_control's
+    // ConfigureBuffers branch (rebuild + re-export + re-emit
+    // bind_buffers + frame_ready). The main thread populates these
+    // before the reader thread starts.
+    ww_image::VkProducer* producer { nullptr };
+    const uint8_t*        rgba_data { nullptr };
+    size_t                rgba_size { 0 };
+    uint64_t              bind_generation { 0 };
+    uint64_t              next_seq { 1 };
 };
 
 void signal_shutdown(HostState& s) {
     s.shutdown.store(true, std::memory_order_release);
     s.wake_cv.notify_all();
+}
+
+// Re-export the producer's current slot, send fresh bind_buffers + a
+// frame_ready that signals the just-uploaded image. Caller must hold
+// `s.send_mu`.
+static bool emit_bind_and_frame_locked(HostState& s, int sync_fd) {
+    if (!s.producer) return false;
+    const auto& L = s.producer->layout();
+
+    s.bind_generation += 1;
+
+    uint64_t sizes[1] = { L.size };
+    int      fds[1]   = { L.dmabuf_fd };
+
+    ww_evt_bind_buffers_t bb {};
+    bb.generation   = s.bind_generation;
+    bb.flags        = s.producer->flags();
+    bb.count        = 1;
+    bb.fourcc       = L.drm_fourcc;
+    bb.width        = L.width;
+    bb.height       = L.height;
+    bb.stride       = L.stride;
+    bb.modifier     = L.drm_modifier;
+    bb.plane_offset = L.plane_offset;
+    bb.sizes.count  = 1;
+    bb.sizes.data   = sizes;
+
+    if (int rc = ww_bridge_send_bind_buffers(s.sock, &bb, fds); rc != 0) {
+        std::fprintf(stderr,
+                     "waywallen-image-renderer: send bind_buffers failed: %d\n",
+                     rc);
+        ::close(sync_fd);
+        return false;
+    }
+
+    ww_evt_frame_ready_t fr {};
+    fr.image_index = 0;
+    fr.seq         = s.next_seq++;
+    fr.ts_ns       = now_ns();
+    int rc = ww_bridge_send_frame_ready(s.sock, &fr, sync_fd);
+    ::close(sync_fd);
+    if (rc != 0) {
+        std::fprintf(stderr,
+                     "waywallen-image-renderer: send frame_ready failed: %d\n",
+                     rc);
+        return false;
+    }
+    return true;
+}
+
+// Honour daemon's ConfigureBuffers: rebuild the producer's slot with
+// the requested placement, re-upload the cached RGBA buffer, and
+// re-emit bind_buffers + frame_ready. If the rebuild fails (e.g. no
+// matching memory type) we leave the existing slot intact and surface
+// the error so the daemon's pending_configure is still cleared by the
+// stale bind_buffers we *don't* send (it'll log a warning when
+// nothing arrives).
+static void apply_configure(HostState& s, uint32_t flags) {
+    std::lock_guard<std::mutex> lock(s.send_mu);
+    std::fprintf(stderr,
+                 "waywallen-image-renderer: ConfigureBuffers received "
+                 "(requested flags=0x%x, current flags=0x%x)\n",
+                 flags, s.producer ? s.producer->flags() : 0u);
+    if (!s.producer || !s.rgba_data) {
+        std::fprintf(stderr,
+                     "waywallen-image-renderer: ConfigureBuffers ignored "
+                     "(no producer/image yet)\n");
+        return;
+    }
+    if (flags == s.producer->flags()) {
+        // Already at the requested placement — just re-emit so the
+        // daemon's pending_configure clears.
+        std::string uerr;
+        int sync_fd = s.producer->upload_and_submit(
+            s.rgba_data, s.rgba_size, &uerr);
+        if (sync_fd < 0) {
+            std::fprintf(stderr,
+                         "waywallen-image-renderer: re-upload failed: %s\n",
+                         uerr.c_str());
+            return;
+        }
+        emit_bind_and_frame_locked(s, sync_fd);
+        return;
+    }
+
+    std::string rerr;
+    if (!s.producer->rebuild(flags, &rerr)) {
+        std::fprintf(stderr,
+                     "waywallen-image-renderer: rebuild(flags=0x%x) failed: %s\n",
+                     flags, rerr.c_str());
+        signal_shutdown(s);
+        return;
+    }
+    std::string uerr;
+    int sync_fd = s.producer->upload_and_submit(
+        s.rgba_data, s.rgba_size, &uerr);
+    if (sync_fd < 0) {
+        std::fprintf(stderr,
+                     "waywallen-image-renderer: post-rebuild upload failed: %s\n",
+                     uerr.c_str());
+        signal_shutdown(s);
+        return;
+    }
+    if (!emit_bind_and_frame_locked(s, sync_fd)) {
+        signal_shutdown(s);
+    }
 }
 
 void apply_control(HostState& s, const ww_bridge_control_t& c) {
@@ -127,6 +244,9 @@ void apply_control(HostState& s, const ww_bridge_control_t& c) {
         break;
     case WW_REQ_SHUTDOWN:
         signal_shutdown(s);
+        break;
+    case WW_REQ_CONFIGURE_BUFFERS:
+        apply_configure(s, c.u.configure_buffers.flags);
         break;
     default:
         std::fprintf(stderr,
@@ -166,7 +286,7 @@ int main(int argc, char** argv) {
 
     if (opt.vulkan_probe) {
         std::string verr;
-        auto prod = ww_image::VkProducer::create(opt.width, opt.height, &verr);
+        auto prod = ww_image::VkProducer::create(opt.width, opt.height, /*flags=*/0, &verr);
         if (!prod) {
             std::fprintf(stderr, "waywallen-image-renderer: vk_producer: %s\n",
                          verr.c_str());
@@ -220,7 +340,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::string verr;
-        auto prod = ww_image::VkProducer::create(opt.width, opt.height, &verr);
+        auto prod = ww_image::VkProducer::create(opt.width, opt.height, /*flags=*/0, &verr);
         if (!prod) {
             std::fprintf(stderr,
                          "waywallen-image-renderer: vk_producer: %s\n",
@@ -256,77 +376,61 @@ int main(int argc, char** argv) {
     if (host.sock < 0)
         die("ww_bridge_connect: " + std::string(std::strerror(-host.sock)));
 
-    if (int rc = ww_bridge_send_ready(host.sock); rc != 0)
-        die("send ready failed: " + std::to_string(rc));
-
-    std::fprintf(stderr,
-                 "waywallen-image-renderer: ready image=%s %ux%u\n",
-                 opt.image_path.empty() ? "(none)" : opt.image_path.c_str(),
-                 opt.width, opt.height);
-
     std::unique_ptr<ww_image::VkProducer> producer;
+    ww_image::RgbaBuf rgba_buf; // kept alive across rebuilds
     if (!opt.image_path.empty()) {
         ww_image::DecodeError derr;
-        ww_image::RgbaBuf buf =
-            ww_image::decode_to_rgba(opt.image_path, opt.width, opt.height, &derr);
-        if (buf.data.empty()) {
+        rgba_buf = ww_image::decode_to_rgba(
+            opt.image_path, opt.width, opt.height, &derr);
+        if (rgba_buf.data.empty()) {
             die("decode " + opt.image_path + ": " + derr.message);
         }
 
         std::string verr;
-        producer = ww_image::VkProducer::create(opt.width, opt.height, &verr);
+        // Initial pool: zero-copy DEVICE_LOCAL. Daemon will follow up
+        // with ConfigureBuffers if any consumer is on a different GPU.
+        producer = ww_image::VkProducer::create(
+            opt.width, opt.height, /*flags=*/0, &verr);
         if (!producer) die("vk_producer: " + verr);
+    }
+
+    // Send Ready *after* device init so the render-node we report is
+    // the one actually backing the producer's slot.
+    const uint32_t drm_major = producer ? producer->drm_render_major() : 0;
+    const uint32_t drm_minor = producer ? producer->drm_render_minor() : 0;
+    if (int rc = ww_bridge_send_ready(host.sock, drm_major, drm_minor); rc != 0)
+        die("send ready failed: " + std::to_string(rc));
+
+    std::fprintf(stderr,
+                 "waywallen-image-renderer: ready image=%s %ux%u "
+                 "drm_render=%u:%u\n",
+                 opt.image_path.empty() ? "(none)" : opt.image_path.c_str(),
+                 opt.width, opt.height, drm_major, drm_minor);
+
+    if (producer) {
+        host.producer    = producer.get();
+        host.rgba_data   = rgba_buf.data.data();
+        host.rgba_size   = rgba_buf.data.size();
 
         std::string uerr;
         int sync_fd = producer->upload_and_submit(
-            buf.data.data(), buf.data.size(), &uerr);
+            rgba_buf.data.data(), rgba_buf.data.size(), &uerr);
         if (sync_fd < 0) die("upload: " + uerr);
 
-        const auto& L = producer->layout();
-
-        // One slot, one DMA-BUF fd. `sizes` is a parallel array for the
-        // bridge; count must match `bb.count`.
-        uint64_t sizes[1] = { L.size };
-        int      fds[1]   = { L.dmabuf_fd };
-
-        ww_evt_bind_buffers_t bb {};
-        bb.count        = 1;
-        bb.fourcc       = L.drm_fourcc;
-        bb.width        = L.width;
-        bb.height       = L.height;
-        bb.stride       = L.stride;
-        bb.modifier     = L.drm_modifier;
-        bb.plane_offset = L.plane_offset;
-        bb.sizes.count  = 1;
-        bb.sizes.data   = sizes;
-
-        {
-            std::lock_guard<std::mutex> lock(host.send_mu);
-            if (int rc = ww_bridge_send_bind_buffers(host.sock, &bb, fds);
-                rc != 0) {
-                ::close(sync_fd);
-                die("send bind_buffers failed: " + std::to_string(rc));
-            }
+        std::lock_guard<std::mutex> lock(host.send_mu);
+        if (!emit_bind_and_frame_locked(host, sync_fd)) {
+            die("initial bind_buffers / frame_ready failed");
         }
-
-        ww_evt_frame_ready_t fr {};
-        fr.image_index = 0;
-        fr.seq         = 0;
-        fr.ts_ns       = now_ns();
-
-        int rc;
-        {
-            std::lock_guard<std::mutex> lock(host.send_mu);
-            rc = ww_bridge_send_frame_ready(host.sock, &fr, sync_fd);
-        }
-        // SCM_RIGHTS dup'd the fd on success; close our copy either way.
-        ::close(sync_fd);
-        if (rc != 0) die("send frame_ready failed: " + std::to_string(rc));
-
         std::fprintf(stderr,
                      "waywallen-image-renderer: sent bind_buffers + "
-                     "frame_ready (%ux%u, stride=%u, size=%u)\n",
-                     L.width, L.height, L.stride, L.size);
+                     "frame_ready (%ux%u, stride=%u, size=%u, "
+                     "gen=%llu, flags=0x%x)\n",
+                     producer->layout().width,
+                     producer->layout().height,
+                     producer->layout().stride,
+                     producer->layout().size,
+                     static_cast<unsigned long long>(host.bind_generation),
+                     producer->flags());
     }
 
     std::thread reader([&]() { reader_loop(host); });

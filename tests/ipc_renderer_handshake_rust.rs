@@ -58,16 +58,20 @@ fn waywallen_renderer_bind_handshake() {
         }
     };
 
-    // 1. Ready, no fds.
+    // 1. Ready, no fds. Render node fields are best-effort (driver may
+    //    or may not advertise VK_EXT_physical_device_drm); we just
+    //    assert the event arrived.
     let (msg, fds) = recv_event(&stream).expect("recv Ready");
     assert!(fds.is_empty(), "Ready must not carry fds");
-    assert_eq!(msg, EventMsg::Ready);
+    assert!(matches!(msg, EventMsg::Ready { .. }), "expected Ready, got {msg:?}");
 
     // 2. BindBuffers with 3 fds.
     let (msg, fds) = recv_event(&stream).expect("recv BindBuffers");
     assert_eq!(fds.len(), 3, "expected 3 DMA-BUF fds");
     match msg {
         EventMsg::BindBuffers {
+            generation,
+            flags,
             count,
             fourcc,
             width,
@@ -77,6 +81,8 @@ fn waywallen_renderer_bind_handshake() {
             plane_offset,
             sizes,
         } => {
+            assert_eq!(generation, 1, "first BindBuffers must report gen=1");
+            assert_eq!(flags, 0, "initial pool must be DEVICE_LOCAL (flags=0)");
             assert_eq!(count, 3);
             assert_eq!(
                 fourcc, DRM_FORMAT_ABGR8888,

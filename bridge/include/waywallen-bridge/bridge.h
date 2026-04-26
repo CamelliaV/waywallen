@@ -81,8 +81,18 @@ int ww_bridge_recv_frame(int sock,
  * High-level event senders (subprocess -> daemon)
  * ----------------------------------------------------------------------- */
 
-/* Emit `Ready`. Must be the first event after connecting. No fds. */
-int ww_bridge_send_ready(int sock);
+/* Emit `Ready`. Must be the first event after connecting. No fds.
+ *
+ * `drm_render_major` / `drm_render_minor` identify the DRM render-node
+ * of the GPU the renderer's Vulkan/EGL/etc. instance picked, so the
+ * daemon can decide whether each subscribed display is on the same GPU
+ * (zero-copy) or a different GPU (must round-trip via HOST_VISIBLE).
+ * Pass `(0, 0)` when the renderer cannot resolve its render node — the
+ * daemon then conservatively assumes cross-GPU and forces HOST_VISIBLE
+ * placement on every subsequent `configure_buffers`. */
+int ww_bridge_send_ready(int sock,
+                         uint32_t drm_render_major,
+                         uint32_t drm_render_minor);
 
 /* Emit `BindBuffers` carrying `m->count` DMA-BUF fds. `fds` must have
  * exactly `m->count` entries. */
@@ -109,13 +119,14 @@ int ww_bridge_send_error(int sock, const char *msg);
 typedef struct ww_bridge_control {
     ww_request_op_t op;
     union {
-        ww_req_hello_t       hello;
-        ww_req_load_scene_t  load_scene;
-        ww_req_play_t        play;
-        ww_req_pause_t       pause;
-        ww_req_mouse_t       mouse;
-        ww_req_set_fps_t     set_fps;
-        ww_req_shutdown_t    shutdown;
+        ww_req_hello_t              hello;
+        ww_req_load_scene_t         load_scene;
+        ww_req_play_t               play;
+        ww_req_pause_t              pause;
+        ww_req_mouse_t              mouse;
+        ww_req_set_fps_t            set_fps;
+        ww_req_shutdown_t           shutdown;
+        ww_req_configure_buffers_t  configure_buffers;
     } u;
 } ww_bridge_control_t;
 

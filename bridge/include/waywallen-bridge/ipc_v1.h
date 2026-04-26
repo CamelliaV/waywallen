@@ -96,6 +96,7 @@ typedef enum ww_request_op {
     WW_REQ_MOUSE = 5,
     WW_REQ_SET_FPS = 6,
     WW_REQ_SHUTDOWN = 7,
+    WW_REQ_CONFIGURE_BUFFERS = 8,
 } ww_request_op_t;
 
 typedef enum ww_event_op {
@@ -139,11 +140,18 @@ typedef struct ww_req_shutdown_t {
     int _empty; /* C forbids empty structs */
 } ww_req_shutdown_t;
 
+typedef struct ww_req_configure_buffers_t {
+    uint32_t flags;
+} ww_req_configure_buffers_t;
+
 typedef struct ww_evt_ready_t {
-    int _empty; /* C forbids empty structs */
+    uint32_t drm_render_major;
+    uint32_t drm_render_minor;
 } ww_evt_ready_t;
 
 typedef struct ww_evt_bind_buffers_t {
+    uint64_t generation;
+    uint32_t flags;
     uint32_t count;
     uint32_t fourcc;
     uint32_t width;
@@ -205,6 +213,11 @@ int  ww_req_shutdown_encode(const ww_req_shutdown_t *m, ww_buf_t *out);
 int  ww_req_shutdown_decode(const uint8_t *buf, size_t len, ww_req_shutdown_t *out);
 void ww_req_shutdown_free(ww_req_shutdown_t *m);
 uint32_t ww_req_shutdown_expected_fds(const ww_req_shutdown_t *m);
+
+int  ww_req_configure_buffers_encode(const ww_req_configure_buffers_t *m, ww_buf_t *out);
+int  ww_req_configure_buffers_decode(const uint8_t *buf, size_t len, ww_req_configure_buffers_t *out);
+void ww_req_configure_buffers_free(ww_req_configure_buffers_t *m);
+uint32_t ww_req_configure_buffers_expected_fds(const ww_req_configure_buffers_t *m);
 
 int  ww_evt_ready_encode(const ww_evt_ready_t *m, ww_buf_t *out);
 int  ww_evt_ready_decode(const uint8_t *buf, size_t len, ww_evt_ready_t *out);

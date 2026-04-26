@@ -90,6 +90,8 @@ async fn handshake_up_to_display_accepted() {
                 width: 1920,
                 height: 1080,
                 refresh_mhz: 60_000,
+                drm_render_major: 0,
+                drm_render_minor: 0,
                 properties: Vec::new(),
             },
             &[],

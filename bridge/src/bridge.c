@@ -288,8 +288,12 @@ int ww_bridge_recv_frame(int sock,
         return rc;                                                       \
     } while (0)
 
-int ww_bridge_send_ready(int sock) {
+int ww_bridge_send_ready(int sock,
+                         uint32_t drm_render_major,
+                         uint32_t drm_render_minor) {
     ww_evt_ready_t m = { 0 };
+    m.drm_render_major = drm_render_major;
+    m.drm_render_minor = drm_render_minor;
     WW_SEND_EVENT(sock, WW_EVT_READY, ww_evt_ready_encode, &m, NULL, 0);
 }
 
@@ -366,6 +370,10 @@ int ww_bridge_recv_control(int sock, ww_bridge_control_t *out) {
     case WW_REQ_SHUTDOWN:
         rc = ww_req_shutdown_decode(body, body_len, &out->u.shutdown);
         break;
+    case WW_REQ_CONFIGURE_BUFFERS:
+        rc = ww_req_configure_buffers_decode(body, body_len,
+                                             &out->u.configure_buffers);
+        break;
     default:
         rc = WW_ERR_UNKNOWN_OPCODE;
         break;
@@ -385,6 +393,9 @@ void ww_bridge_control_free(ww_bridge_control_t *msg) {
     case WW_REQ_MOUSE:      ww_req_mouse_free(&msg->u.mouse); break;
     case WW_REQ_SET_FPS:    ww_req_set_fps_free(&msg->u.set_fps); break;
     case WW_REQ_SHUTDOWN:   ww_req_shutdown_free(&msg->u.shutdown); break;
+    case WW_REQ_CONFIGURE_BUFFERS:
+        ww_req_configure_buffers_free(&msg->u.configure_buffers);
+        break;
     default: break;
     }
     memset(msg, 0, sizeof(*msg));

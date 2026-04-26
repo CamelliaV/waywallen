@@ -63,6 +63,8 @@ mod tests {
             width: 1920,
             height: 1080,
             refresh_mhz: 60000,
+            drm_render_major: 226,
+            drm_render_minor: 128,
             properties: vec![
                 ("scale".to_string(), "1.0".to_string()),
                 ("hdr".to_string(), "false".to_string()),
