@@ -681,16 +681,36 @@ async fn dispatch(state: &Arc<AppState>, req: pb::Request) -> pb::Response {
                 test_pattern: false,
             };
 
-            // Reuse an existing renderer if its spawn parameters match
-            // exactly (wp_type + metadata + w/h/fps). This makes per-
-            // display apply cheap: N displays pointing at the same
-            // wallpaper + same settings share one renderer process.
+            // Reuse an existing renderer if its identity matches
+            // (wp_type + identity-tagged metadata + w/h/fps). Step 4
+            // makes the comparison identity-aware: runtime-tunable
+            // settings (identity = false in the manifest) only flow
+            // through ApplySettings — no respawn, no display flicker.
             let renderer_id = match state.renderer_manager.find_reusable(&spawn_req).await {
-                Some(existing_id) => {
-                    log::info!(
-                        "wallpaper_apply: reusing renderer {existing_id} for wallpaper {}",
-                        entry.id
-                    );
+                Some((existing_id, delta, fps_change)) => {
+                    if delta.is_empty() && fps_change.is_none() {
+                        log::info!(
+                            "wallpaper_apply: reusing renderer {existing_id} for wallpaper {} (no settings delta)",
+                            entry.id
+                        );
+                    } else {
+                        log::info!(
+                            "wallpaper_apply: reusing renderer {existing_id} for wallpaper {} \
+                             (ApplySettings delta keys={:?}, fps_change={fps_change:?})",
+                            entry.id,
+                            delta.keys().collect::<Vec<_>>(),
+                        );
+                        let kv: Vec<(String, String)> = delta.into_iter().collect();
+                        if let Err(e) = state
+                            .renderer_manager
+                            .send_apply_settings(&existing_id, kv, fps_change)
+                            .await
+                        {
+                            log::warn!(
+                                "wallpaper_apply: send_apply_settings to {existing_id} failed: {e}"
+                            );
+                        }
+                    }
                     existing_id
                 }
                 None => match state.renderer_manager.spawn(spawn_req).await {
@@ -701,9 +721,24 @@ async fn dispatch(state: &Arc<AppState>, req: pb::Request) -> pb::Response {
                         new_id
                     }
                     Err(e) => {
+                        // Schema-validation errors raised from
+                        // `build_init_msg` mean the source plugin's
+                        // metadata didn't match the renderer
+                        // manifest. Surface those as InvalidArgument
+                        // so the UI shows a meaningful "your Lua
+                        // wrote the wrong key" message instead of an
+                        // opaque Internal error. Anything else
+                        // (fork/exec/handshake/timeout) stays
+                        // Internal.
+                        let msg = e.to_string();
+                        let status = if msg.contains("metadata validation failed") {
+                            pb::Status::InvalidArgument
+                        } else {
+                            pb::Status::Internal
+                        };
                         return error_response(
                             rid,
-                            pb::Status::Internal,
+                            status,
                             format!("spawn failed: {e}"),
                         );
                     }
@@ -784,13 +819,97 @@ async fn dispatch(state: &Arc<AppState>, req: pb::Request) -> pb::Response {
                 .into_iter()
                 .map(|(k, v)| (k, v.values))
                 .collect();
+            // Snapshot the previous per-plugin settings so we can diff
+            // against the new ones and dispatch ApplySettings to any
+            // live renderer whose plugin name matches.
+            let previous_plugins = state.settings.snapshot().plugins;
             state.settings.update(|s| {
                 if let Some(g) = r.global.as_ref() {
                     s.global.default_width = g.default_width;
                     s.global.default_height = g.default_height;
                 }
-                s.plugins = new_plugins;
+                s.plugins = new_plugins.clone();
             });
+            // Step 4: live renderer hot-reload.
+            // For each plugin that actually changed, walk live
+            // renderers for that plugin name and push the delta.
+            // Identity-tagged keys produce a warn log (would require
+            // a respawn, which is too invasive for a settings RPC).
+            let mut plugin_names_changed: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for (name, values) in &new_plugins {
+                if previous_plugins.get(name) != Some(values) {
+                    plugin_names_changed.insert(name.clone());
+                }
+            }
+            for name in previous_plugins.keys() {
+                if !new_plugins.contains_key(name) {
+                    plugin_names_changed.insert(name.clone());
+                }
+            }
+            for plugin_name in plugin_names_changed {
+                let def = state
+                    .renderer_manager
+                    .registry()
+                    .all_renderers()
+                    .into_iter()
+                    .find(|d| d.name == plugin_name)
+                    .cloned();
+                let Some(def) = def else { continue };
+                let new_kv = new_plugins.get(&plugin_name).cloned().unwrap_or_default();
+                let old_kv = previous_plugins
+                    .get(&plugin_name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Partition the new kv into runtime vs identity per
+                // the manifest. Skip plugins with no schema — there's
+                // no way to tell hot-reloadable from identity, and
+                // wescene falls in this bucket today.
+                if def.settings.is_empty() {
+                    continue;
+                }
+
+                let mut delta: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for (k, v) in &new_kv {
+                    let Some(setting) = def.settings.get(k) else {
+                        continue;
+                    };
+                    if !setting.identity && old_kv.get(k) != Some(v) {
+                        delta.insert(k.clone(), v.clone());
+                    } else if setting.identity && old_kv.get(k) != Some(v) {
+                        log::warn!(
+                            "settings_set: '{plugin_name}.{k}' is identity-tagged; \
+                             change will only take effect on next renderer respawn"
+                        );
+                    }
+                }
+
+                if delta.is_empty() {
+                    continue;
+                }
+
+                let ids = state.renderer_manager.list().await;
+                for id in ids {
+                    let Some(handle) = state.renderer_manager.get(&id).await else {
+                        continue;
+                    };
+                    if handle.name != plugin_name {
+                        continue;
+                    }
+                    let kv: Vec<(String, String)> = delta.clone().into_iter().collect();
+                    if let Err(e) = state
+                        .renderer_manager
+                        .send_apply_settings(&id, kv, None)
+                        .await
+                    {
+                        log::warn!(
+                            "settings_set: live ApplySettings to {id} ({plugin_name}) failed: {e}"
+                        );
+                    }
+                }
+            }
             ok(rid, Res::SettingsSet(pb::Empty {}))
         }
 

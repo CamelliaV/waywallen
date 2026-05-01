@@ -452,11 +452,12 @@ int ww_bridge_recv_control(int sock, ww_bridge_control_t *out) {
 
     out->op = (ww_request_op_t)opcode;
     switch (out->op) {
-    case WW_REQ_HELLO:
-        rc = ww_req_hello_decode(body, body_len, &out->u.hello);
+    case WW_REQ_INIT:
+        rc = ww_req_init_decode(body, body_len, &out->u.init);
         break;
-    case WW_REQ_LOAD_SCENE:
-        rc = ww_req_load_scene_decode(body, body_len, &out->u.load_scene);
+    case WW_REQ_APPLY_SETTINGS:
+        rc = ww_req_apply_settings_decode(body, body_len,
+                                          &out->u.apply_settings);
         break;
     case WW_REQ_PLAY:
         rc = ww_req_play_decode(body, body_len, &out->u.play);
@@ -489,8 +490,9 @@ int ww_bridge_recv_control(int sock, ww_bridge_control_t *out) {
 void ww_bridge_control_free(ww_bridge_control_t *msg) {
     if (!msg) return;
     switch (msg->op) {
-    case WW_REQ_HELLO:      ww_req_hello_free(&msg->u.hello); break;
-    case WW_REQ_LOAD_SCENE: ww_req_load_scene_free(&msg->u.load_scene); break;
+    case WW_REQ_INIT:       ww_req_init_free(&msg->u.init); break;
+    case WW_REQ_APPLY_SETTINGS:
+        ww_req_apply_settings_free(&msg->u.apply_settings); break;
     case WW_REQ_PLAY:       ww_req_play_free(&msg->u.play); break;
     case WW_REQ_PAUSE:      ww_req_pause_free(&msg->u.pause); break;
     case WW_REQ_MOUSE:      ww_req_mouse_free(&msg->u.mouse); break;
@@ -564,4 +566,120 @@ void ww_bridge_negotiation_fill_format_caps(
     out->usages_count       = n;
     out->plane_counts       = scratch_plane_counts;
     out->plane_counts_count = n;
+}
+
+
+/* -----------------------------------------------------------------------
+ * Init handshake (v4)
+ * ----------------------------------------------------------------------- */
+
+int ww_bridge_recv_init(int sock, ww_bridge_init_t *out) {
+    if (!out) return -EINVAL;
+    memset(out, 0, sizeof(*out));
+
+    ww_bridge_control_t ctl;
+    int rc = ww_bridge_recv_control(sock, &ctl);
+    if (rc != 0) return rc;
+
+    if (ctl.op != WW_REQ_INIT) {
+        ww_bridge_control_free(&ctl);
+        return -EPROTO;
+    }
+
+    /* Transfer ownership of every heap allocation from the decoded
+     * `ww_req_init_t` into the caller-facing `ww_bridge_init_t`.
+     * After this point the union is logically empty so calling
+     * `ww_bridge_control_free` on it would double-free; we skip it. */
+    out->spawn_version    = ctl.u.init.spawn_version;
+    out->renderer_name    = ctl.u.init.renderer_name;
+    out->extent_w         = ctl.u.init.extent_w;
+    out->extent_h         = ctl.u.init.extent_h;
+    out->fps              = ctl.u.init.fps;
+    out->test_pattern     = ctl.u.init.test_pattern != 0u ? 1 : 0;
+    out->resource_kind    = ctl.u.init.resource_kind;
+    out->resource_primary = ctl.u.init.resource_primary;
+    out->resource_extras  = ctl.u.init.resource_extras;
+    out->settings         = ctl.u.init.settings;
+
+    /* Zero the union members we just stole so `ww_bridge_control_free`
+     * is safe even if a future refactor calls it. */
+    memset(&ctl.u.init, 0, sizeof(ctl.u.init));
+
+    if (out->spawn_version != WW_BRIDGE_SUPPORTED_SPAWN_VERSION) {
+        return -EPROTO;
+    }
+    return 0;
+}
+
+void ww_bridge_init_free(ww_bridge_init_t *out) {
+    if (!out) return;
+    free(out->renderer_name);
+    free(out->resource_kind);
+    free(out->resource_primary);
+    /* `ww_kv_list_t` cleanup mirrors what the auto-generated
+     * `free_kv_list` does in ipc_v1.c — but that helper is `static`
+     * inside the generated TU. Replicate the freeing pattern locally
+     * (free key+value strings, then the `data` array). */
+    if (out->resource_extras.data) {
+        for (uint32_t i = 0; i < out->resource_extras.count; ++i) {
+            free(out->resource_extras.data[i].key);
+            free(out->resource_extras.data[i].value);
+        }
+        free(out->resource_extras.data);
+    }
+    if (out->settings.data) {
+        for (uint32_t i = 0; i < out->settings.count; ++i) {
+            free(out->settings.data[i].key);
+            free(out->settings.data[i].value);
+        }
+        free(out->settings.data);
+    }
+    memset(out, 0, sizeof(*out));
+}
+
+int ww_bridge_send_init_nack(int sock,
+                             uint32_t received_spawn_version,
+                             uint32_t supported_spawn_version,
+                             const char *reason) {
+    ww_evt_init_nack_t m;
+    memset(&m, 0, sizeof(m));
+    m.received_spawn_version = received_spawn_version;
+    m.supported_spawn_version = supported_spawn_version;
+    /* Encoder doesn't mutate `reason`; cast away const-ness to fit
+     * the generated struct layout. NULL → empty string. */
+    m.reason = (char *)(reason ? reason : "");
+    WW_SEND_EVENT(sock, WW_EVT_INIT_NACK, ww_evt_init_nack_encode,
+                  &m, NULL, 0);
+}
+
+
+/* -----------------------------------------------------------------------
+ * ApplySettings (v5)
+ * ----------------------------------------------------------------------- */
+
+int ww_bridge_apply_settings_from_control(ww_bridge_control_t *ctrl,
+                                          ww_bridge_apply_settings_t *out) {
+    if (!ctrl || !out) return -EINVAL;
+    if (ctrl->op != WW_REQ_APPLY_SETTINGS) return -EINVAL;
+    memset(out, 0, sizeof(*out));
+    /* Transfer ownership of the heap kv list. After this point
+     * `ctrl->u.apply_settings.settings` is empty so
+     * `ww_bridge_control_free(ctrl)` is a no-op for that arm. */
+    out->settings = ctrl->u.apply_settings.settings;
+    out->fps      = ctrl->u.apply_settings.fps;
+    memset(&ctrl->u.apply_settings.settings, 0,
+           sizeof(ctrl->u.apply_settings.settings));
+    return 0;
+}
+
+void ww_bridge_apply_settings_free(ww_bridge_apply_settings_t *out) {
+    if (!out) return;
+    if (out->settings.data) {
+        for (uint32_t i = 0; i < out->settings.count; ++i) {
+            free(out->settings.data[i].key);
+            free(out->settings.data[i].value);
+        }
+        free(out->settings.data);
+    }
+    memset(out, 0, sizeof(*out));
 }

@@ -19,12 +19,59 @@ pub struct RendererDef {
     pub name: String,
     pub bin: PathBuf,
     pub types: Vec<WallpaperType>,
-    #[serde(default)]
-    pub extra_args: Vec<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_version")]
     pub version: String,
+    /// Wire-protocol `Init.spawn_version` the daemon should emit when
+    /// spawning this renderer. `None` means "use the daemon's compile-
+    /// time `SPAWN_VERSION`" (legacy manifests). Step 2 keeps this
+    /// optional so old manifests behave identically; Step 3 will make
+    /// it the source of truth.
+    #[serde(default)]
+    pub spawn_version: Option<u32>,
+    /// Allow-listed extra metadata keys (beyond the canonical `path`).
+    /// Forwarded verbatim as `Init.resource_extras`. The daemon warns
+    /// when source-plugin metadata carries a key that's neither `path`
+    /// nor in this list nor in `settings`; Step 3 will turn the warning
+    /// into an error.
+    ///
+    /// Empty (the default) means "no extras". A manifest is considered
+    /// "schema-bearing" iff it has a non-empty `extras` OR a non-empty
+    /// `settings` table — the legacy "no schema" fall-through stays in
+    /// place for old manifests until OWE migrates wescene.
+    #[serde(default)]
+    pub extras: Vec<String>,
+    /// Optional schema for plugin-level settings (e.g. mpv's
+    /// `loop_file`, wescene's `volume`). Each entry declares a type
+    /// and a default; missing entries are filled from the default at
+    /// validation time. Empty (the default) means "no schema, no
+    /// validation".
+    #[serde(default)]
+    pub settings: HashMap<String, SettingDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SettingDef {
+    #[serde(rename = "type")]
+    pub ty: SettingType,
+    pub default: toml::Value,
+    /// When `true` (the default), the setting participates in the
+    /// renderer's identity hash — changing it should respawn the
+    /// renderer. When `false`, the setting is hot-applicable and
+    /// changes should be dispatched as `ApplySettings` instead
+    /// (Step 4 work).
+    #[serde(default = "default_true")]
+    pub identity: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SettingType {
+    U32,
+    F32,
+    String,
+    Bool,
 }
 
 fn default_priority() -> u32 {
@@ -33,6 +80,242 @@ fn default_priority() -> u32 {
 
 fn default_version() -> String {
     "v0.0.0".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Metadata validation
+// ---------------------------------------------------------------------------
+
+/// True iff the manifest carries any schema fields (`extras` or
+/// `settings`). When false, validation falls through to the legacy
+/// "no schema" pass-through used by unmigrated renderers (wescene
+/// today).
+fn has_schema(def: &RendererDef) -> bool {
+    !def.extras.is_empty() || !def.settings.is_empty()
+}
+
+/// Outcome of `validate_metadata`: typecast string values ready for
+/// the `Init` wire fields, plus a list of (non-fatal) warnings the
+/// caller should log.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ValidatedMetadata {
+    /// Value at `metadata["path"]`. Empty string when the manifest
+    /// has no schema.
+    pub primary_value: String,
+    /// Allow-listed extras (key → metadata value). Only populated when
+    /// the manifest has a schema.
+    pub extras: HashMap<String, String>,
+    /// Plugin settings, already typecast to strings for the wire. When
+    /// the manifest has no `settings` table this is the pass-through
+    /// copy of the input metadata's plugin-shaped keys (Step 2 keeps
+    /// "no schema" semantics broad — the legacy spawn path just
+    /// forwards everything as argv).
+    pub settings: HashMap<String, String>,
+    /// Non-fatal observations: unknown metadata keys, defaulted
+    /// settings, etc. Step 3 will tighten some of these into errors.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationError {
+    /// Required `path` key was missing from metadata or had an empty
+    /// value.
+    MissingPath,
+    /// Setting value couldn't be coerced into the schema's declared
+    /// type.
+    BadSettingType {
+        key: String,
+        expected: SettingType,
+        got: String,
+    },
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidationError::MissingPath => {
+                write!(f, "missing required metadata key 'path'")
+            }
+            ValidationError::BadSettingType { key, expected, got } => write!(
+                f,
+                "plugin setting '{key}' expected type {expected:?}, got {got:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+/// Validate a source-plugin's `metadata` map against a manifest's
+/// optional `extras` / `settings` schema.
+///
+/// Behaviour matrix:
+///
+/// - schema-bearing manifest (`extras` and/or `settings` non-empty):
+///   require `metadata["path"]` to exist and be non-empty; surface a
+///   warning for any metadata key that's neither `"path"`, in
+///   `extras`, nor declared in `settings` (Step 3 will turn into
+///   error).
+/// - `def.settings` non-empty: typecheck each known setting against
+///   its schema; missing keys are filled from `default`. Bad types
+///   accumulate into `Vec<ValidationError>`.
+/// - schema-less (both empty): no schema → pass `metadata` through
+///   verbatim as `settings` to preserve today's "argv fall-through"
+///   behaviour. The caller logs an info line at the call site.
+pub fn validate_metadata(
+    def: &RendererDef,
+    md: &HashMap<String, String>,
+) -> std::result::Result<ValidatedMetadata, Vec<ValidationError>> {
+    let mut errors: Vec<ValidationError> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    let schema_active = has_schema(def);
+
+    // ----- resource section -----
+    let (primary_value, extras) = if schema_active {
+        let primary_value = match md.get("path") {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => {
+                errors.push(ValidationError::MissingPath);
+                String::new()
+            }
+        };
+        let allowed: std::collections::HashSet<&str> = std::iter::once("path")
+            .chain(def.extras.iter().map(|s| s.as_str()))
+            .chain(def.settings.keys().map(|s| s.as_str()))
+            .collect();
+        let mut extras_out: HashMap<String, String> = HashMap::new();
+        for (k, v) in md {
+            if k == "path" {
+                continue;
+            }
+            if def.settings.contains_key(k) {
+                // Settings have their own schema branch below.
+                continue;
+            }
+            if def.extras.iter().any(|e| e == k) {
+                extras_out.insert(k.clone(), v.clone());
+            } else if !allowed.contains(k.as_str()) {
+                warnings.push(format!(
+                    "unknown metadata key '{k}' for renderer '{}' \
+                     (not 'path', not in extras, not in settings); \
+                     Step 3 will turn into error",
+                    def.name
+                ));
+            }
+        }
+        (primary_value, extras_out)
+    } else {
+        (String::new(), HashMap::new())
+    };
+
+    // ----- settings section -----
+    let settings: HashMap<String, String> = if def.settings.is_empty() {
+        // No schema → pass-through. Filter out the keys we already
+        // claimed for the resource section so we don't duplicate them.
+        if schema_active {
+            md.iter()
+                .filter(|(k, _)| {
+                    let in_primary = k.as_str() == "path";
+                    let in_extras = def.extras.iter().any(|e| e == *k);
+                    !in_primary && !in_extras
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        } else {
+            md.clone()
+        }
+    } else {
+        let mut out: HashMap<String, String> = HashMap::new();
+        for (key, schema) in &def.settings {
+            match md.get(key) {
+                Some(raw) => match coerce_setting(raw, schema.ty) {
+                    Some(coerced) => {
+                        out.insert(key.clone(), coerced);
+                    }
+                    None => errors.push(ValidationError::BadSettingType {
+                        key: key.clone(),
+                        expected: schema.ty,
+                        got: raw.clone(),
+                    }),
+                },
+                None => {
+                    let coerced = match toml_default_to_string(&schema.default, schema.ty) {
+                        Some(s) => s,
+                        None => {
+                            // Defaults that can't be stringified are a
+                            // manifest authoring bug; surface as warn
+                            // and skip rather than crash.
+                            warnings.push(format!(
+                                "plugin setting '{key}' has default \
+                                 incompatible with declared type \
+                                 {:?}; skipping",
+                                schema.ty
+                            ));
+                            continue;
+                        }
+                    };
+                    out.insert(key.clone(), coerced);
+                    warnings.push(format!(
+                        "plugin setting '{key}' filled from manifest default"
+                    ));
+                }
+            }
+        }
+        out
+    };
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(ValidatedMetadata {
+        primary_value,
+        extras,
+        settings,
+        warnings,
+    })
+}
+
+/// Try to interpret a raw `String` as a value of `ty`. Returns the
+/// canonicalised string form on success (e.g. `"42"` for u32, `"true"`
+/// for bool). Returns `None` if the value can't be coerced.
+fn coerce_setting(raw: &str, ty: SettingType) -> Option<String> {
+    match ty {
+        SettingType::U32 => raw.parse::<u32>().ok().map(|v| v.to_string()),
+        SettingType::F32 => raw.parse::<f32>().ok().map(|v| v.to_string()),
+        SettingType::Bool => match raw {
+            "true" | "false" => Some(raw.to_string()),
+            _ => None,
+        },
+        SettingType::String => Some(raw.to_string()),
+    }
+}
+
+/// Stringify a `toml::Value` default, coerced to `ty`. Returns `None`
+/// when the default is structurally incompatible (e.g. an array as a
+/// `u32` default).
+fn toml_default_to_string(value: &toml::Value, ty: SettingType) -> Option<String> {
+    match (value, ty) {
+        (toml::Value::Integer(i), SettingType::U32) => {
+            if *i >= 0 {
+                Some(i.to_string())
+            } else {
+                None
+            }
+        }
+        (toml::Value::Integer(i), SettingType::F32) => Some((*i as f32).to_string()),
+        (toml::Value::Float(f), SettingType::F32) => Some(f.to_string()),
+        (toml::Value::Boolean(b), SettingType::Bool) => Some(b.to_string()),
+        (toml::Value::String(s), SettingType::String) => Some(s.clone()),
+        // Common manifest mistake: declaring `default = "30"` for a
+        // u32 setting. Be lenient — try to parse the string.
+        (toml::Value::String(s), other) => coerce_setting(s, other),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -176,4 +459,240 @@ pub fn standard_plugin_dirs(subdir: &str) -> Vec<PathBuf> {
     dirs.push(xdg.join("waywallen").join(subdir));
 
     dirs
+}
+
+/// Returns true when the manifest has any schema fields. Public so
+/// `renderer_manager::build_init_msg` can branch on it without
+/// duplicating the predicate.
+pub fn manifest_has_schema(def: &RendererDef) -> bool {
+    has_schema(def)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    fn def_no_schema() -> RendererDef {
+        RendererDef {
+            name: "no-schema".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["scene".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: None,
+            extras: Vec::new(),
+            settings: HashMap::new(),
+        }
+    }
+
+    fn def_image() -> RendererDef {
+        // Image renderer: schema-bearing via a non-empty `extras`
+        // (`assets`) that no real renderer needs but exercises the
+        // schema-active branch with no settings.
+        RendererDef {
+            name: "waywallen-image".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["image".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: Some(1),
+            extras: vec!["assets".into()],
+            settings: HashMap::new(),
+        }
+    }
+
+    fn def_mpv() -> RendererDef {
+        let mut ps = HashMap::new();
+        ps.insert(
+            "loop_file".to_string(),
+            SettingDef {
+                ty: SettingType::String,
+                default: toml::Value::String("inf".into()),
+                identity: false,
+            },
+        );
+        ps.insert(
+            "hwdec".to_string(),
+            SettingDef {
+                ty: SettingType::String,
+                default: toml::Value::String("auto".into()),
+                identity: false,
+            },
+        );
+        RendererDef {
+            name: "waywallen-mpv".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["video".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: Some(1),
+            extras: Vec::new(),
+            settings: ps,
+        }
+    }
+
+    #[test]
+    fn no_schema_falls_through_metadata() {
+        let mut md = HashMap::new();
+        md.insert("foo".to_string(), "bar".to_string());
+        md.insert("baz".to_string(), "42".to_string());
+        let v = validate_metadata(&def_no_schema(), &md).expect("no errors");
+        assert_eq!(v.primary_value, "");
+        assert!(v.extras.is_empty());
+        // No schema → metadata flows through as settings for legacy
+        // argv fall-through.
+        assert_eq!(v.settings.get("foo").map(|s| s.as_str()), Some("bar"));
+        assert_eq!(v.settings.get("baz").map(|s| s.as_str()), Some("42"));
+    }
+
+    #[test]
+    fn missing_path_is_an_error_when_schema_active() {
+        let md = HashMap::new();
+        let errs = validate_metadata(&def_image(), &md).expect_err("must error");
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(errs[0], ValidationError::MissingPath));
+    }
+
+    #[test]
+    fn empty_path_value_is_an_error() {
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "".to_string());
+        let errs = validate_metadata(&def_image(), &md).expect_err("must error");
+        assert!(matches!(errs[0], ValidationError::MissingPath));
+    }
+
+    #[test]
+    fn extras_pass_when_in_allowlist() {
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/scene.pkg".to_string());
+        md.insert("assets".to_string(), "/tmp/assets".to_string());
+        let v = validate_metadata(&def_image(), &md).expect("ok");
+        assert_eq!(v.primary_value, "/tmp/scene.pkg");
+        assert_eq!(v.extras.len(), 1);
+        assert_eq!(v.extras.get("assets").map(|s| s.as_str()), Some("/tmp/assets"));
+        assert!(v.warnings.is_empty(), "no warnings expected: {:?}", v.warnings);
+    }
+
+    #[test]
+    fn unknown_extra_key_warns_but_does_not_error() {
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/scene.pkg".to_string());
+        md.insert("totally_unknown".to_string(), "yo".to_string());
+        let v = validate_metadata(&def_image(), &md).expect("ok");
+        assert_eq!(v.primary_value, "/tmp/scene.pkg");
+        assert!(
+            v.warnings.iter().any(|w| w.contains("totally_unknown")),
+            "expected warning for unknown key, got {:?}",
+            v.warnings
+        );
+    }
+
+    #[test]
+    fn settings_missing_filled_from_default() {
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/clip.mp4".to_string());
+        let v = validate_metadata(&def_mpv(), &md).expect("ok");
+        assert_eq!(v.primary_value, "/tmp/clip.mp4");
+        assert_eq!(
+            v.settings.get("loop_file").map(|s| s.as_str()),
+            Some("inf"),
+        );
+        assert_eq!(
+            v.settings.get("hwdec").map(|s| s.as_str()),
+            Some("auto"),
+        );
+        assert!(
+            v.warnings.iter().any(|w| w.contains("loop_file")),
+            "expected default-fill warn for loop_file"
+        );
+    }
+
+    #[test]
+    fn settings_supplied_value_wins_over_default() {
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/clip.mp4".to_string());
+        md.insert("loop_file".to_string(), "no".to_string());
+        let v = validate_metadata(&def_mpv(), &md).expect("ok");
+        assert_eq!(
+            v.settings.get("loop_file").map(|s| s.as_str()),
+            Some("no"),
+        );
+    }
+
+    #[test]
+    fn settings_bad_type_errors() {
+        let mut def = def_mpv();
+        def.settings.insert(
+            "ratio".to_string(),
+            SettingDef {
+                ty: SettingType::F32,
+                default: toml::Value::Float(1.0),
+                identity: false,
+            },
+        );
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/clip.mp4".to_string());
+        md.insert("ratio".to_string(), "not-a-number".to_string());
+        let errs = validate_metadata(&def, &md).expect_err("must error");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                ValidationError::BadSettingType { key, .. } if key == "ratio"
+            )),
+            "expected BadSettingType for ratio, got {errs:?}"
+        );
+    }
+
+    #[test]
+    fn u32_default_from_integer_works() {
+        let mut def = def_mpv();
+        def.settings.insert(
+            "fps".to_string(),
+            SettingDef {
+                ty: SettingType::U32,
+                default: toml::Value::Integer(30),
+                identity: true,
+            },
+        );
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/clip.mp4".to_string());
+        let v = validate_metadata(&def, &md).expect("ok");
+        assert_eq!(v.settings.get("fps").map(|s| s.as_str()), Some("30"));
+    }
+
+    #[test]
+    fn manifest_parses_with_extras_and_settings() {
+        // End-to-end: TOML → RendererDef → validate_metadata.
+        let src = r#"
+            [renderer]
+            name = "waywallen-mpv"
+            bin = "/usr/bin/waywallen-mpv-renderer"
+            types = ["video"]
+            priority = 100
+            spawn_version = 1
+            extras = ["subtitle"]
+
+            [renderer.settings]
+            loop_file = { type = "string", default = "inf",  identity = false }
+            hwdec     = { type = "string", default = "auto", identity = false }
+        "#;
+        let manifest: RendererManifest =
+            toml::from_str(src).expect("manifest parses");
+        assert_eq!(manifest.renderer.spawn_version, Some(1));
+        assert_eq!(manifest.renderer.extras, vec!["subtitle".to_string()]);
+        assert_eq!(manifest.renderer.settings.len(), 2);
+
+        // Wire it through the validator.
+        let mut md = HashMap::new();
+        md.insert("path".to_string(), "/tmp/clip.mp4".to_string());
+        md.insert("hwdec".to_string(), "vaapi".to_string());
+        let v = validate_metadata(&manifest.renderer, &md).expect("ok");
+        assert_eq!(v.primary_value, "/tmp/clip.mp4");
+        assert_eq!(v.settings.get("hwdec").map(|s| s.as_str()), Some("vaapi"));
+        assert_eq!(v.settings.get("loop_file").map(|s| s.as_str()), Some("inf"));
+    }
 }

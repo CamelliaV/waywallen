@@ -55,7 +55,52 @@
       `release_syncobj@release_point` before re-recording into the same
       `image_index`.
 
-  Version: 3
+  Version: 6
+
+  v6 (settings rename + canonical resource key):
+    - The `init` and `apply_settings` requests rename their
+      `plugin_settings` kv list to `settings`. Inside `[renderer.X]`
+      the `plugin_` prefix was redundant — the renderer owns the
+      table. No semantic change otherwise; the wire layout is
+      identical (kv_list at the same field offset). Bumping the
+      version forces every renderer subprocess to be rebuilt against
+      the matching bridge so the C struct field name stays in sync.
+    - `init.resource_kind` continues to carry the wallpaper type, but
+      it now mirrors `req.wp_type` verbatim — manifests no longer
+      supply a separate `kind`. Consumers MAY treat the field as
+      advisory; the canonical source is the wallpaper entry.
+    - `init.resource_primary` is now drawn from `metadata["path"]`
+      whenever the renderer manifest declares any schema (`extras`
+      and/or `settings`). Manifests no longer pick a per-renderer
+      primary key.
+
+  v5 (ApplySettings — runtime-tunable knobs):
+    - Opcode 2 — previously the unused legacy `load_scene` request —
+      is repurposed as `apply_settings`. The daemon sends it over a
+      live renderer's IPC socket whenever a non-identity setting on
+      the renderer changes (e.g. mpv `loop_file` / `hwdec`, wescene
+      `volume`) without respawning the child. `fps` is carried as a
+      typed field with `0` as the "unset" sentinel (XML codegen lacks
+      `optional u32`).
+    - Pairs with the daemon-side identity-aware `find_reusable`:
+      reusing a live renderer that differs only on hot-reloadable
+      settings issues an `apply_settings` instead of spawning a
+      duplicate child.
+
+  v4 (Init handshake — additive):
+    - Daemon repurposes opcode 1 (was `hello`) into `init`. After
+      accept() the daemon now sends an `init` request carrying the
+      typed spawn payload (extent / fps / test_pattern / resource /
+      plugin_settings) before reading the renderer's `ready` event.
+      Step 1 of the renderer-Init refactor still also passes the
+      legacy `--key value` argv; renderers MAY ignore the new `init`
+      message and continue parsing argv. Step 3 will switch each
+      renderer to consume the `init` message and the daemon will
+      stop forwarding metadata via argv.
+    - New event `init_nack` (opcode 8) lets a renderer reject an
+      unsupported `init` (e.g. `spawn_version` mismatch or unknown
+      `resource_kind`) with a structured reason; the daemon kills
+      the child and surfaces the reason to the caller.
 
   v2 (modifier negotiation):
     - Renderer ships `format_caps` event after `ready` and before any
@@ -94,34 +139,73 @@
       where every modifier is external_only); the daemon must pick a
       COMPAT_LINEAR path regardless of consumer caps.
 -->
-<protocol name="waywallen_ipc" version="3">
+<protocol name="waywallen_ipc" version="6">
 
   <!-- ==================================================================
        REQUESTS  (daemon -> subprocess, control plane)
        ================================================================== -->
 
   <!--
-    Opening handshake. In v1 this is not required on every connection
-    (the daemon currently spawns the subprocess and expects a `ready`
-    event without a preceding `hello`), but reserved for future
-    reconnect flows.
+    Spawn-time `init` (v4): typed payload sent by the daemon
+    immediately after accept(), carrying everything the renderer
+    needs to bring up its Vulkan/EGL/audio state. Replaces the
+    legacy "all-CLI-argv" path.
+
+    Fields:
+      `spawn_version`   — protocol version of the Init payload itself.
+                          Renderer MUST send `init_nack` if it does
+                          not recognise the value (current = 1).
+      `renderer_name`   — manifest name, debug-only.
+      `extent_w/h`      — pixel extent.
+      `fps`             — target framerate (0 = unspecified).
+      `test_pattern`    — XML codegen lacks a `bool` type, so this is
+                          encoded as `u32` (0 = off, 1 = drive the
+                          host-owned offscreen test ring).
+      `resource_kind`   — wallpaper type ("scene" | "video" | "image"
+                          | …); matches the daemon's `WallpaperType`.
+      `resource_primary`— canonical primary path/value (the scene pkg,
+                          video file, image file, …).
+      `resource_extras` — secondary metadata kv pairs (assets dir,
+                          workshop_id, …). Excludes the key whose
+                          value populates `resource_primary`.
+      `settings`        — manifest-declared tunables (volume, hwdec,
+                          loop_file, …). Empty in Step 1.
+                          Renamed from `plugin_settings` in v6.
   -->
-  <request name="hello" opcode="1">
-    <arg name="client" type="string"/>
-    <arg name="version" type="u32"/>
+  <request name="init" opcode="1">
+    <arg name="spawn_version" type="u32"/>
+    <arg name="renderer_name" type="string"/>
+    <arg name="extent_w" type="u32"/>
+    <arg name="extent_h" type="u32"/>
+    <arg name="fps" type="u32"/>
+    <arg name="test_pattern" type="u32"/>
+    <arg name="resource_kind" type="string"/>
+    <arg name="resource_primary" type="string"/>
+    <arg name="resource_extras" type="kv_list"/>
+    <arg name="settings" type="kv_list"/>
   </request>
 
   <!--
-    Ask the subprocess to load a specific scene. Currently unused by
-    the Rust daemon (scene/assets are passed via CLI args at spawn
-    time) but the C++ host understands this message.
+    v5 hot-reload: push a delta of `[settings]` (and optionally a new
+    `fps`) to a live renderer without respawning. Only identity=false
+    settings declared in the renderer's manifest are valid here; the
+    daemon side filters before sending. `fps` uses `0` as the "unset"
+    sentinel since the codegen has no `optional u32`.
+
+    v6 renamed the kv list from `plugin_settings` to `settings` to
+    match the manifest's `[renderer.settings]` table.
+
+    Renderer-side dispatch:
+      - mpv: applies `loop_file` / `hwdec` via `mpv_set_property`
+        (mpv option names use dashes, not underscores).
+      - image: warns when `settings` is non-empty (no hot-reloadable
+        knobs declared by the manifest).
+      - wescene: applies `volume` via the existing scene-graph hook
+        and `fps` via the same path as `set_fps` (handled by OWE).
   -->
-  <request name="load_scene" opcode="2">
-    <arg name="pkg" type="string"/>
-    <arg name="assets" type="string"/>
+  <request name="apply_settings" opcode="2">
+    <arg name="settings" type="kv_list"/>
     <arg name="fps" type="u32"/>
-    <arg name="width" type="u32"/>
-    <arg name="height" type="u32"/>
   </request>
 
   <request name="play" opcode="3"/>
@@ -378,6 +462,27 @@
     <arg name="modifier" type="u64"/>
     <arg name="reason" type="u32"/>
     <arg name="message" type="string"/>
+  </event>
+
+  <!--
+    Reject the daemon's `init` request (v4). Renderer emits this
+    instead of `ready` when it cannot honour the spawn payload —
+    the canonical case being `spawn_version` mismatch, but also
+    used for unknown `resource_kind`, malformed plugin_settings,
+    etc. The daemon kills the child and surfaces `reason` to the
+    caller of `RendererManager::spawn`.
+
+    Fields:
+      `received_spawn_version`  — value the renderer saw on the wire
+                                  (0 if the field was missing /
+                                  truncated).
+      `supported_spawn_version` — what the renderer can handle.
+      `reason`                  — human-readable explanation.
+  -->
+  <event name="init_nack" opcode="8">
+    <arg name="received_spawn_version" type="u32"/>
+    <arg name="supported_spawn_version" type="u32"/>
+    <arg name="reason" type="string"/>
   </event>
 
 </protocol>

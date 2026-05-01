@@ -280,31 +280,12 @@ void ww_bridge_negotiation_fill_format_caps(
  * the daemon treats ts_ns as advisory. */
 uint64_t ww_bridge_now_ns(void);
 
-/* Argv consumer for unrecognized `--key value` pairs forwarded by the
- * daemon from source-plugin metadata (e.g. --fps, --workshop_id) that
- * a particular renderer doesn't implement. Behaviour: if argv[*i]
- * starts with "--" and the next token does NOT, advance *i by one to
- * skip the value too. Otherwise leave *i untouched (the outer arg
- * loop's own ++i will move past the bare flag).
- *
- * Safe to call on the trailing-arg case (i+1 >= argc).
- *
- * Usage:
- *   for (int i = 1; i < argc; ++i) {
- *       const char *a = argv[i];
- *       if (strcmp(a, "--width") == 0) { ... }
- *       else { ww_bridge_skip_unknown_kv_arg(&i, argc, argv); }
- *   }
- */
-static inline void ww_bridge_skip_unknown_kv_arg(int *i, int argc, char *const argv[]) {
-    if (!i || *i < 0 || *i >= argc) return;
-    const char *a = argv[*i];
-    if (!a || a[0] != '-' || a[1] != '-') return;
-    if (*i + 1 >= argc) return;
-    const char *next = argv[*i + 1];
-    if (!next || (next[0] == '-' && next[1] == '-')) return;
-    ++(*i);
-}
+/* (Removed in Step 3 of the renderer-Init refactor: the
+ * `ww_bridge_skip_unknown_kv_arg` helper is gone — every in-tree
+ * renderer now consumes spawn parameters from the typed `Init`
+ * message and parses only `--ipc` plus a small fixed set of
+ * standalone-debug flags. The wescene renderer in OWE uses argparse
+ * and never linked the helper, so its migration is independent.) */
 
 
 /* -----------------------------------------------------------------------
@@ -346,8 +327,8 @@ void ww_bridge_log_gpu_info(const char *prefix,
 typedef struct ww_bridge_control {
     ww_request_op_t op;
     union {
-        ww_req_hello_t              hello;
-        ww_req_load_scene_t         load_scene;
+        ww_req_init_t               init;
+        ww_req_apply_settings_t     apply_settings;
         ww_req_play_t               play;
         ww_req_pause_t              pause;
         ww_req_mouse_t              mouse;
@@ -364,6 +345,125 @@ int ww_bridge_recv_control(int sock, ww_bridge_control_t *out);
 /* Free any heap allocations inside a decoded control message. Safe to
  * call on a zero-initialized struct. */
 void ww_bridge_control_free(ww_bridge_control_t *msg);
+
+
+/* -----------------------------------------------------------------------
+ * Init handshake (v4) — typed spawn payload + structured rejection
+ *
+ * Step 1 of the renderer-Init refactor adds these helpers; renderers
+ * are NOT yet wired to call them (Step 3 swaps each renderer's
+ * `main.cpp`). The daemon already double-sends — legacy `--key value`
+ * argv plus a typed `init` request immediately after accept(). When
+ * Step 3 lands, every renderer's `main` will:
+ *
+ *   int sock = ww_bridge_connect(socket_path);
+ *   ww_bridge_init_t init = {0};
+ *   int rc = ww_bridge_recv_init(sock, &init);
+ *   if (rc < 0) {
+ *       ww_bridge_send_init_nack(sock, init.spawn_version,
+ *                                WW_BRIDGE_SUPPORTED_SPAWN_VERSION,
+ *                                "rejected");
+ *       exit(1);
+ *   }
+ *   // ... use init.{extent_w,extent_h,fps,resource_*,settings}
+ *   //     to drive Vulkan/EGL/mpv init ...
+ *   ww_bridge_init_free(&init);
+ * ----------------------------------------------------------------------- */
+
+/* Spawn-payload version this build of the bridge handles. Bump when
+ * the wire shape of `ww_req_init_t` (or `ww_bridge_init_t`) changes;
+ * `ww_bridge_recv_init` validates the value sent by the daemon
+ * matches and returns -EPROTO otherwise. */
+#define WW_BRIDGE_SUPPORTED_SPAWN_VERSION 1u
+
+/* Caller-friendly view of the typed Init payload. Strings and kv
+ * lists are heap-owned (transferred from the underlying
+ * `ww_req_init_t` decode); call `ww_bridge_init_free` exactly once
+ * after consumption. */
+typedef struct ww_bridge_init {
+    uint32_t      spawn_version;
+    char         *renderer_name;     /* heap-owned, NUL-terminated */
+    uint32_t      extent_w;
+    uint32_t      extent_h;
+    uint32_t      fps;
+    int           test_pattern;      /* 0/1 — XML lacks bool */
+    char         *resource_kind;     /* heap-owned, NUL-terminated */
+    char         *resource_primary;  /* heap-owned, NUL-terminated */
+    ww_kv_list_t  resource_extras;
+    ww_kv_list_t  settings;
+} ww_bridge_init_t;
+
+/* Receive the daemon's typed `init` request and copy it into `out`.
+ *
+ * Behaviour:
+ *   - Blocks until the next control frame arrives.
+ *   - If the message is anything other than `WW_REQ_INIT`, the body
+ *     is freed and -EPROTO is returned.
+ *   - If `spawn_version != WW_BRIDGE_SUPPORTED_SPAWN_VERSION`, the
+ *     decoded value lands in `out->spawn_version` so the caller can
+ *     forward it via `ww_bridge_send_init_nack`, and the function
+ *     returns -EPROTO. The other heap fields are still populated and
+ *     must be released via `ww_bridge_init_free`.
+ *   - On success returns 0; ownership of every heap allocation
+ *     transfers to the caller. */
+int ww_bridge_recv_init(int sock, ww_bridge_init_t *out);
+
+/* Release every heap allocation inside `out`. Safe to call on a
+ * zero-initialized struct or after a successful free. Always returns
+ * with `out` cleared. */
+void ww_bridge_init_free(ww_bridge_init_t *out);
+
+/* Emit an `init_nack` event back to the daemon (subprocess →
+ * daemon). Used when `ww_bridge_recv_init` returns -EPROTO due to a
+ * version mismatch or when the renderer cannot satisfy the typed
+ * payload. The daemon kills the child and propagates `reason` to
+ * the spawn caller.
+ *
+ * `reason` may be NULL (encoded as the empty string). Returns 0 on
+ * success or a negative errno / WW_ERR_* on failure. */
+int ww_bridge_send_init_nack(int sock,
+                             uint32_t received_spawn_version,
+                             uint32_t supported_spawn_version,
+                             const char *reason);
+
+
+/* -----------------------------------------------------------------------
+ * ApplySettings (v5) — runtime hot-reload of plugin settings
+ *
+ * The daemon fires `apply_settings` over a live renderer's IPC socket
+ * whenever a non-identity plugin setting (or fps) changes — e.g.
+ * `loop_file` / `hwdec` for mpv, `volume` for wescene. Renderers peel
+ * the typed view from the generic control message via
+ * `ww_bridge_apply_settings_from_control` and dispatch each kv pair
+ * however they choose; non-handled keys should warn-log.
+ *
+ * `fps == 0` is the "unset" sentinel — the daemon omits a fps change
+ * when `0` lands on the wire.
+ * ----------------------------------------------------------------------- */
+
+/* Caller-friendly view of the apply_settings payload. Backing storage
+ * lives in the underlying `ww_bridge_control_t::u.apply_settings`;
+ * `_from_control` transfers ownership of the heap kv list into this
+ * struct, so the caller MUST call `ww_bridge_apply_settings_free`
+ * exactly once (NOT `ww_bridge_control_free`) when done. */
+typedef struct ww_bridge_apply_settings {
+    ww_kv_list_t settings;
+    uint32_t     fps;
+} ww_bridge_apply_settings_t;
+
+/* Peel the apply_settings typed view out of a generic control message.
+ * On success, ownership of the heap kv list moves from `ctrl` into
+ * `out`; `ctrl->u.apply_settings.settings` is zeroed so a follow-up
+ * `ww_bridge_control_free(ctrl)` is a no-op for that arm.
+ * Returns 0 on success, -EINVAL if `ctrl->op != WW_REQ_APPLY_SETTINGS`
+ * or either pointer is NULL. */
+int ww_bridge_apply_settings_from_control(ww_bridge_control_t *ctrl,
+                                          ww_bridge_apply_settings_t *out);
+
+/* Release every heap allocation inside `out`. Safe to call on a
+ * zero-initialized struct or after a successful free. Always returns
+ * with `out` cleared. */
+void ww_bridge_apply_settings_free(ww_bridge_apply_settings_t *out);
 
 
 #ifdef __cplusplus

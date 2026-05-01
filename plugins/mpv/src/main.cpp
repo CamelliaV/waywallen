@@ -62,6 +62,13 @@ struct Options {
     std::exit(1);
 }
 
+// Step 3: spawn-time params (width/height/video path) come from the
+// daemon's typed Init message; loop_file/hwdec come from
+// Init.settings (manifest exposes them). Only `--ipc` and
+// `--render-node` are still parsed here. `--render-node` stays on
+// CLI because it picks the GPU before EGL init and is environment-
+// level. Legacy daemon double-send args (`--width`, `--video`, ...)
+// are silently ignored.
 Options parse_args(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
@@ -72,23 +79,38 @@ Options parse_args(int argc, char** argv) {
         };
         if (a == "--ipc") {
             o.ipc_path = next();
-        } else if (a == "--width") {
-            o.width = static_cast<uint32_t>(std::strtoul(next().c_str(), nullptr, 10));
-        } else if (a == "--height") {
-            o.height = static_cast<uint32_t>(std::strtoul(next().c_str(), nullptr, 10));
-        } else if (a == "--video" || a == "--path") {
-            o.video_path = next();
-        } else if (a == "--no-hwdec") {
-            o.hwdec = false;
-        } else if (a == "--no-loop") {
-            o.loop_file = false;
         } else if (a == "--render-node") {
             o.render_node = next();
-        } else {
-            ww_bridge_skip_unknown_kv_arg(&i, argc, argv);
+        } else if (a == "--no-hwdec") {
+            // Dev escape hatch — overrides Init.settings.hwdec.
+            o.hwdec = false;
+        } else if (a == "--no-loop") {
+            // Dev escape hatch — overrides Init.settings.loop_file.
+            o.loop_file = false;
+        } else if (a == "--width" || a == "--height" || a == "--video"
+                   || a == "--path" || a == "--fps") {
+            // Legacy daemon double-send: skip flag + value.
+            (void)next();
+        } else if (a == "--test-pattern") {
+            // Bare bool — just skip flag.
+        } else if (a.size() >= 2 && a[0] == '-' && a[1] == '-' && i + 1 < argc) {
+            // Unknown `--key value` pair from the daemon's argv —
+            // skip the value too (no bridge helper anymore).
+            std::string nxt = argv[i + 1];
+            if (!(nxt.size() >= 2 && nxt[0] == '-' && nxt[1] == '-')) ++i;
         }
     }
     return o;
+}
+
+// Lookup helper for ww_kv_list_t. Linear scan; the lists are tiny
+// (manifest settings have <10 entries today).
+static const char* kv_get(const ww_kv_list_t& kv, const char* key) {
+    for (uint32_t i = 0; i < kv.count; ++i) {
+        if (kv.data[i].key && std::strcmp(kv.data[i].key, key) == 0)
+            return kv.data[i].value;
+    }
+    return nullptr;
 }
 
 
@@ -544,16 +566,71 @@ bool drain_pending_negotiate(HostState& host, GlCtx& gl) {
 // ---------------------------------------------------------------------------
 
 void apply_control(HostState& s, MpvState& m, WakeState& wake,
-                   const ww_bridge_control_t& c) {
+                   ww_bridge_control_t& c) {
     switch (c.op) {
-    case WW_REQ_HELLO:
+    case WW_REQ_INIT:
+        // Init is consumed at the top of main before the reader
+        // thread starts. A late Init is either a buggy daemon
+        // resending or a protocol violation; log and ignore.
+        std::fprintf(stderr,
+                     "waywallen-mpv-renderer: unexpected late Init; ignoring\n");
         break;
-    case WW_REQ_LOAD_SCENE:
-        if (c.u.load_scene.pkg && c.u.load_scene.pkg[0]) {
-            const char* cmd[] = { "loadfile", c.u.load_scene.pkg, nullptr };
-            mpv_command(m.mpv, cmd);
+    case WW_REQ_APPLY_SETTINGS: {
+        // v5 hot-reload: peel the typed view, apply known mpv knobs
+        // via mpv_set_property (mpv option names use dashes, not the
+        // underscore form the manifest uses), warn on the rest. fps
+        // routes through the same mpv option as `--fps`/playback rate
+        // limiting — the renderer's main loop is driven by mpv's own
+        // clock so changing the fps cap takes effect on the next
+        // decoded frame.
+        ww_bridge_apply_settings_t as {};
+        if (ww_bridge_apply_settings_from_control(&c, &as) != 0) break;
+        for (uint32_t i = 0; i < as.settings.count; ++i) {
+            const char* key = as.settings.data[i].key;
+            const char* val = as.settings.data[i].value;
+            if (!key || !val) continue;
+            const char* mpv_opt = nullptr;
+            if (std::strcmp(key, "loop_file") == 0)      mpv_opt = "loop-file";
+            else if (std::strcmp(key, "hwdec") == 0)     mpv_opt = "hwdec";
+            else {
+                std::fprintf(stderr,
+                             "waywallen-mpv-renderer: ApplySettings: unknown key '%s'; ignoring\n",
+                             key);
+                continue;
+            }
+            // mpv_set_property with MPV_FORMAT_STRING wants a `char**`
+            // pointing at the string pointer.
+            char* mut_val = const_cast<char*>(val);
+            int rc = mpv_set_property(m.mpv, mpv_opt, MPV_FORMAT_STRING, &mut_val);
+            if (rc < 0) {
+                std::fprintf(stderr,
+                             "waywallen-mpv-renderer: mpv_set_property(%s=%s) rc=%d\n",
+                             mpv_opt, val, rc);
+            }
         }
+        if (as.fps != 0) {
+            // mpv's "container-fps-override" overrides the decoder's
+            // declared fps; "fps" itself is read-only on the playback
+            // side. The renderer's slot pacing is driven by mpv's
+            // render-context-update callback rather than a wall clock,
+            // so a fps change here is advisory — the consumer-side
+            // pacing still dominates. We log and let mpv decide.
+            std::string fps_str = std::to_string(as.fps);
+            char* mut_val = const_cast<char*>(fps_str.c_str());
+            int rc = mpv_set_property(m.mpv, "container-fps-override",
+                                      MPV_FORMAT_STRING, &mut_val);
+            if (rc < 0) {
+                std::fprintf(stderr,
+                             "waywallen-mpv-renderer: ApplySettings.fps=%u set failed rc=%d\n",
+                             as.fps, rc);
+            }
+        }
+        ww_bridge_apply_settings_free(&as);
+        // Wake the main loop so a paused renderer picks up the
+        // setting on the next iteration.
+        wake_up(wake);
         break;
+    }
     case WW_REQ_PLAY: {
         int v = 0;
         mpv_set_property(m.mpv, "pause", MPV_FORMAT_FLAG, &v);
@@ -632,6 +709,55 @@ int main(int argc, char** argv) {
 
     ::prctl(PR_SET_PDEATHSIG, SIGTERM);
 
+    /* --- Connect first, then read Init ---
+     *
+     * Step 3: connect() moved to before EGL init and mpv_init. The
+     * daemon's typed Init payload carries extent + video path +
+     * settings (loop_file / hwdec) and drives the rest of
+     * setup. */
+    HostState host;
+    host.sock = ww_bridge_connect(opt.ipc_path.c_str());
+    if (host.sock < 0)
+        die("ww_bridge_connect: " + std::string(std::strerror(-host.sock)));
+
+    ww_bridge_init_t init {};
+    if (int rc = ww_bridge_recv_init(host.sock, &init); rc < 0) {
+        const char* reason = (rc == -EPROTO)
+            ? "init: protocol error or unsupported spawn_version"
+            : "init: recv failed";
+        ww_bridge_send_init_nack(host.sock, init.spawn_version,
+                                 WW_BRIDGE_SUPPORTED_SPAWN_VERSION,
+                                 reason);
+        ww_bridge_init_free(&init);
+        die(std::string(reason) + " rc=" + std::to_string(rc));
+    }
+
+    // Canonical resource key is "path" (v6); resource_primary holds
+    // the on-disk path.
+    opt.width  = init.extent_w;
+    opt.height = init.extent_h;
+    if (init.resource_primary && init.resource_primary[0])
+        opt.video_path = init.resource_primary;
+
+    // settings → typed knobs. CLI escape hatches (--no-hwdec /
+    // --no-loop) already applied in parse_args; only override when
+    // the user did NOT pass them. We honour CLI-supplied false by
+    // detecting "still at default true" — same effect because the
+    // dev flags are sticky.
+    if (const char* v = kv_get(init.settings, "loop_file")) {
+        // mpv understands "inf" / "no" / "yes" / a count. Treat any
+        // non-"no" value as loop=true to preserve old semantics; the
+        // mpv_set_option_string call below uses the raw value.
+        opt.loop_file = !(std::strcmp(v, "no") == 0);
+    }
+    if (const char* v = kv_get(init.settings, "hwdec")) {
+        opt.hwdec = !(std::strcmp(v, "no") == 0);
+    }
+    ww_bridge_init_free(&init);
+
+    if (opt.video_path.empty())
+        die("Init.resource_primary (video path) is required");
+
     GlCtx gl;
     init_egl(gl, opt);
 
@@ -648,11 +774,6 @@ int main(int argc, char** argv) {
     WakeState wake;
     MpvState  mpv;
     mpv_init(mpv, opt, wake);
-
-    HostState host;
-    host.sock = ww_bridge_connect(opt.ipc_path.c_str());
-    if (host.sock < 0)
-        die("ww_bridge_connect: " + std::string(std::strerror(-host.sock)));
 
     // Hand the EGL display + drm_fd off to the bridge pool. Bridge
     // takes ownership of drm_fd (we won't close it on destroy_gl).

@@ -329,6 +329,13 @@ impl SourceManager {
         })?;
         ctx.set("probe", probe_fn)?;
 
+        // Source plugins write `entry.metadata` directly using the
+        // canonical schema:
+        //   metadata = { path = resource, [extras...] }
+        // The daemon validates the resulting table against the
+        // resolved renderer manifest in
+        // `renderer_registry::validate_metadata`.
+
         Ok(ctx)
     }
 

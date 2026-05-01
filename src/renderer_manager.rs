@@ -20,6 +20,11 @@ use uuid::Uuid;
 
 use crate::ipc::proto::{ControlMsg, EventMsg};
 use crate::ipc::uds::{recv_event, send_control, CodecError};
+
+/// Spawn-time `Init` payload version the daemon currently emits. Bump
+/// this when the wire shape of `ControlMsg::Init` changes; renderers
+/// reply with `EventMsg::InitNack` if they don't recognise the value.
+pub const SPAWN_VERSION: u32 = 1;
 use crate::plugin::renderer_registry::{RendererDef, RendererRegistry};
 use crate::routing::Router;
 use crate::wallpaper_type::WallpaperType;
@@ -206,6 +211,14 @@ pub struct RendererHandle {
     last_dispatched_scheme:
         Arc<StdMutex<Option<crate::negotiate::NegotiatedScheme>>>,
 
+    /// Runtime-tunable plugin settings most recently pushed via
+    /// `ApplySettings` (or seeded at spawn from the initial Init's
+    /// non-identity settings). Used by the apply path to compute the
+    /// delta against an incoming SpawnRequest so we only dispatch
+    /// ApplySettings when something actually changed. Identity-tagged
+    /// settings do NOT live here — those force a respawn.
+    runtime_settings: Arc<StdMutex<HashMap<String, String>>>,
+
     /// Sink for per-frame [`crate::sync::FrameRecord`]s. The display
     /// endpoint pushes one record per consumer per frame; the reaper
     /// task (spawned alongside this handle) drains them, waits for
@@ -340,6 +353,26 @@ impl RendererHandle {
         }
     }
 
+    /// Snapshot of the runtime-settings cache. Used by the apply path
+    /// to compute a delta against an incoming SpawnRequest's
+    /// non-identity metadata.
+    pub fn runtime_settings_snapshot(&self) -> HashMap<String, String> {
+        self.runtime_settings
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replace the runtime-settings cache with `new`. Called from the
+    /// `send_apply_settings` path right after a successful dispatch so
+    /// the next reuse comparison has up-to-date state.
+    pub fn set_runtime_settings(&self, new: HashMap<String, String>) {
+        if let Ok(mut g) = self.runtime_settings.lock() {
+            *g = new;
+        }
+    }
+
     /// Push a per-frame [`crate::sync::FrameRecord`] to the reaper.
     /// The display endpoint calls this once per consumer per frame,
     /// after creating the consumer's binary release_syncobj. Returns
@@ -436,9 +469,11 @@ impl RendererManager {
                 name: "test-scene".to_string(),
                 bin: PathBuf::from(bin),
                 types: vec!["scene".to_string()],
-                extra_args: vec![],
                 priority: 100,
                 version: "v0.0.0".to_string(),
+                spawn_version: None,
+                extras: Vec::new(),
+                settings: Default::default(),
             });
         }
         Self::new(registry)
@@ -472,22 +507,36 @@ impl RendererManager {
             .ok_or_else(|| anyhow!("no renderer registered for type '{}'", req.wp_type))?
             .clone();
 
+        // Build the Init message *before* spawning the child so a
+        // schema-validation error fails fast (no fork(), no orphan
+        // socket file lingering past TempUnlink). The argv block
+        // below is the legacy fall-through path; renderers that
+        // already consume Init ignore it. Step 3 deletes the legacy
+        // argv branch entirely.
+        let init_msg = build_init_msg(&req, &renderer_def)?;
+
+        // Snapshot the non-identity (runtime-tunable) slice of
+        // settings so the apply path can compute a delta on a future
+        // reuse. Identity-tagged settings DO NOT live in this cache —
+        // those force a respawn on change.
+        let initial_runtime_settings =
+            initial_runtime_settings(&req, &renderer_def);
+
         let mut cmd = Command::new(&renderer_def.bin);
-        cmd.arg("--ipc")
-            .arg(&sock_path)
-            .arg("--width")
+        cmd.arg("--ipc").arg(&sock_path);
+        // Legacy argv — kept until wescene migrates off in OWE follow-up.
+        // Image and mpv renderers in this repo now consume Init only and
+        // ignore these flags. wescene-renderer (in open-wallpaper-engine)
+        // still parses argv via argparse, so the daemon double-sends:
+        // typed Init handshake above + the legacy `--<k> <v>` argv below.
+        cmd.arg("--width")
             .arg(req.width.to_string())
             .arg("--height")
             .arg(req.height.to_string())
             .arg("--fps")
             .arg(req.fps.to_string());
-        // Forward type-specific metadata as --key value CLI args.
         for (key, value) in &req.metadata {
             cmd.arg(format!("--{key}")).arg(value);
-        }
-        // Append extra_args from the renderer manifest.
-        for arg in &renderer_def.extra_args {
-            cmd.arg(arg);
         }
         if req.test_pattern {
             cmd.arg("--test-pattern");
@@ -521,35 +570,26 @@ impl RendererManager {
             .set_nonblocking(false)
             .context("clear O_NONBLOCK on accepted stream")?;
 
-        // Read the host's initial `Ready` event synchronously so we
-        // can fail spawn() with a clear error if initVulkan blew up.
-        let ready_stream = std_stream
+        // Step 1 of the renderer-Init refactor: emit the typed Init
+        // message right after accept(). The legacy CLI argv block above
+        // is still in place; renderers that have not yet been switched
+        // to consume Init simply ignore it. Send + Ready/InitNack recv
+        // is factored into `run_init_handshake` so the unit test can
+        // drive it over a socketpair without going through spawn().
+        // (`init_msg` was built above before spawn so a schema error
+        // fails before the child process is created.)
+        let handshake_stream = std_stream
             .try_clone()
-            .context("try_clone for Ready poll")?;
-        let ready: (EventMsg, Vec<OwnedFd>) = tokio::task::spawn_blocking(move || {
-            recv_event(&ready_stream).map_err(|e| anyhow!("recv Ready: {e}"))
+            .context("try_clone for Init handshake")?;
+        let gpu = tokio::task::spawn_blocking(move || {
+            run_init_handshake(&handshake_stream, &init_msg)
         })
         .await
-        .context("ready poll join")??;
-        let gpu = match ready.0 {
-            EventMsg::Ready {
-                drm_render_major,
-                drm_render_minor,
-            } => DrmNode {
-                major: drm_render_major,
-                minor: drm_render_minor,
-            },
-            other => {
-                let _ = child.start_kill();
-                return Err(anyhow!(
-                    "host emitted {:?} before Ready; aborting spawn",
-                    other
-                ));
-            }
-        };
-        if !ready.1.is_empty() {
-            log::warn!("Ready unexpectedly carried {} fds; dropping", ready.1.len());
-        }
+        .context("init handshake join")?
+        .map_err(|e| {
+            let _ = child.start_kill();
+            e
+        })?;
         log::info!(
             "renderer {id}: Ready (drm_render={}:{})",
             gpu.major,
@@ -629,6 +669,7 @@ impl RendererManager {
             release_syncobj,
             format_caps,
             last_dispatched_scheme: Arc::new(StdMutex::new(None)),
+            runtime_settings: Arc::new(StdMutex::new(initial_runtime_settings)),
             frame_record_tx,
             pending_configure,
             child: Arc::new(TokioMutex::new(Some(child))),
@@ -660,21 +701,84 @@ impl RendererManager {
         Ok(id)
     }
 
-    /// Find an already-running renderer whose spawn parameters match
-    /// `req` (wp_type, metadata, width, height, fps, test_pattern).
-    /// Returns its id so callers can relink displays to it instead of
-    /// spawning a duplicate. `None` if no match exists.
-    pub async fn find_reusable(&self, req: &SpawnRequest) -> Option<RendererId> {
+    /// Find an already-running renderer whose **identity** matches
+    /// `req` and the resolved manifest schema, ignoring runtime-tunable
+    /// (`identity = false`) settings. Returns the id plus a delta of
+    /// runtime-only metadata that differs from the live renderer's
+    /// current `runtime_settings` cache, plus an optional new fps when
+    /// the manifest declares fps as a runtime setting (or for reusable
+    /// mismatches against the typed `req.fps`, see below).
+    ///
+    /// Identity for v6:
+    ///   - `wp_type`, `width`, `height`, `test_pattern`
+    ///   - `fps` is identity unless the manifest declares a
+    ///     `settings.fps` entry with `identity = false` (Step 4 does
+    ///     NOT make daemon-typed `fps` runtime by itself; that remains
+    ///     identity-coupled to the spawn). It IS surfaced as a delta
+    ///     value so callers can dispatch ApplySettings.fps when
+    ///     manifest_settings_runtime_fps is true.
+    ///   - `resource_primary` (`metadata["path"]`) and `extras` keys
+    ///     are identity.
+    ///   - `settings` keys with `identity = true` are identity.
+    ///   - schema-less manifests (no `extras` and no `settings`) treat
+    ///     ALL metadata as identity to preserve today's behavior. This
+    ///     covers wescene until OWE migrates.
+    ///
+    /// Returns `None` when no live renderer matches identity.
+    pub async fn find_reusable(
+        &self,
+        req: &SpawnRequest,
+    ) -> Option<(RendererId, HashMap<String, String>, Option<u32>)> {
+        let def = self.registry.resolve(&req.wp_type)?.clone();
+        let req_identity = identity_view(req, &def);
+        let req_runtime = runtime_view(req, &def);
+
         let inner = self.inner.lock().await;
         for (id, h) in inner.renderers.iter() {
-            if h.wp_type == req.wp_type
-                && h.width == req.width
-                && h.height == req.height
-                && h.fps == req.fps
-                && h.metadata == req.metadata
+            if h.wp_type != req.wp_type
+                || h.width != req.width
+                || h.height != req.height
+                || h.fps != req.fps
+                || h.name != def.name
             {
-                return Some(id.clone());
+                continue;
             }
+            // Build the live renderer's identity view from its stored
+            // metadata, using the SAME def (renderer name matched
+            // above so the schema is the same).
+            let live_identity = identity_view_from_metadata(&h.metadata, &def);
+            if live_identity != req_identity {
+                continue;
+            }
+            // Identity hit. Compute delta = req_runtime ∖ live_runtime
+            // (where "live_runtime" is the handle's cache). Only keys
+            // present in the request and either missing from or
+            // different in the live cache appear in the delta.
+            let live_runtime = h.runtime_settings_snapshot();
+            let mut delta: HashMap<String, String> = HashMap::new();
+            for (k, v) in &req_runtime {
+                match live_runtime.get(k) {
+                    Some(prev) if prev == v => {}
+                    _ => {
+                        delta.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            // fps as ApplySettings field: only meaningful when the
+            // manifest declares settings.fps with identity = false;
+            // otherwise typed `fps` is identity-coupled and the early
+            // exit above already filtered.
+            let fps_change = if def
+                .settings
+                .get("fps")
+                .map(|s| !s.identity)
+                .unwrap_or(false)
+            {
+                Some(req.fps)
+            } else {
+                None
+            };
+            return Some((id.clone(), delta, fps_change));
         }
         None
     }
@@ -766,6 +870,48 @@ impl RendererManager {
         if let Ok(mut guard) = handle.last_dispatched_scheme.lock() {
             *guard = Some(scheme);
         }
+        Ok(())
+    }
+
+    /// Push an `ApplySettings` to a live renderer. `settings` is the
+    /// delta the caller already filtered to runtime-only keys
+    /// (identity-tagged settings would force respawn, not hot-reload).
+    /// `fps == None` is the no-fps-change signal; `Some(0)` is treated
+    /// as "no change" too — the wire format uses 0 as the unset
+    /// sentinel and a fps of 0 makes no physical sense for a renderer.
+    ///
+    /// On success the renderer's `runtime_settings` cache is merged
+    /// with `settings` so the next reuse comparison sees the post-apply
+    /// state. No idempotence cache for now (Step 4-lite); each call
+    /// sends.
+    pub async fn send_apply_settings(
+        &self,
+        id: &str,
+        settings: Vec<(String, String)>,
+        fps: Option<u32>,
+    ) -> Result<()> {
+        let handle = self
+            .get(id)
+            .await
+            .ok_or_else(|| anyhow!("unknown renderer: {id}"))?;
+        let wire_fps = fps.unwrap_or(0);
+        let msg = ControlMsg::ApplySettings {
+            settings: settings.clone(),
+            fps: wire_fps,
+        };
+        log::info!(
+            "renderer {id}: ApplySettings keys={:?} fps={}",
+            settings.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            wire_fps,
+        );
+        self.send_control(id, msg).await?;
+        // Merge into the runtime cache so the next find_reusable can
+        // see we already applied this delta.
+        let mut merged = handle.runtime_settings_snapshot();
+        for (k, v) in settings {
+            merged.insert(k, v);
+        }
+        handle.set_runtime_settings(merged);
         Ok(())
     }
 
@@ -1133,6 +1279,206 @@ impl Drop for TempUnlink {
     }
 }
 
+/// Build the typed `Init` control message the daemon emits right
+/// after a renderer subprocess connects back.
+///
+/// Resource derivation:
+/// - When the manifest has any schema (`extras` or `settings`), the
+///   daemon pulls `resource_primary` (`metadata["path"]`) /
+///   `resource_extras` / `settings` straight from `validate_metadata`.
+///   Validation errors propagate up so a typo'd source-plugin metadata
+///   key fails the spawn before the child is ever forked.
+/// - When the manifest has no schema (legacy), fall back to the
+///   Step 1 hard-coded primary-key priority list (`scene` → `video`
+///   → `image` → `path`) so old manifests continue to work unchanged.
+///   An info log makes the legacy path visible. This branch goes away
+///   once OWE migrates wescene.
+///
+/// `resource_kind` is always `req.wp_type` — the daemon already knows
+/// the wallpaper type from the entry, so a manifest-side `kind` would
+/// only be redundant.
+///
+/// `spawn_version` is read from the manifest if set, otherwise the
+/// daemon's compile-time `SPAWN_VERSION` constant.
+pub(crate) fn build_init_msg(
+    req: &SpawnRequest,
+    def: &RendererDef,
+) -> Result<ControlMsg> {
+    let spawn_version = def.spawn_version.unwrap_or(SPAWN_VERSION);
+
+    let (primary_value, extras_kv, settings_kv) = if crate::plugin::renderer_registry::manifest_has_schema(def) {
+        let v = crate::plugin::renderer_registry::validate_metadata(def, &req.metadata)
+            .map_err(|errs| {
+                let joined = errs
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                anyhow!("renderer '{}' metadata validation failed: {joined}", def.name)
+            })?;
+        for w in &v.warnings {
+            log::warn!("renderer '{}': {w}", def.name);
+        }
+        (v.primary_value, v.extras, v.settings)
+    } else {
+        log::info!(
+            "renderer '{}' has no manifest schema; using legacy primary-key fallback",
+            def.name
+        );
+        const PRIMARY_KEYS: [&str; 4] = ["scene", "video", "image", "path"];
+        let mut primary_key: Option<&str> = None;
+        let mut primary_value = String::new();
+        for k in PRIMARY_KEYS {
+            if let Some(v) = req.metadata.get(k) {
+                primary_key = Some(k);
+                primary_value = v.clone();
+                break;
+            }
+        }
+        let extras: HashMap<String, String> = req
+            .metadata
+            .iter()
+            .filter(|(k, _)| Some(k.as_str()) != primary_key)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        (primary_value, extras, HashMap::new())
+    };
+
+    let mut extras: Vec<(String, String)> = extras_kv.into_iter().collect();
+    extras.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut settings: Vec<(String, String)> = settings_kv.into_iter().collect();
+    settings.sort_by(|a, b| a.0.cmp(&b.0));
+
+    Ok(ControlMsg::Init {
+        spawn_version,
+        renderer_name: def.name.clone(),
+        extent_w: req.width,
+        extent_h: req.height,
+        fps: req.fps,
+        test_pattern: u32::from(req.test_pattern),
+        resource_kind: req.wp_type.clone(),
+        resource_primary: primary_value,
+        resource_extras: extras,
+        settings,
+    })
+}
+
+/// Identity key for `find_reusable`. Two requests compare equal under
+/// this view iff reusing one renderer for the other is safe (same
+/// resource, same identity-tagged settings). Schema-less manifests
+/// treat ALL metadata as identity — that's the wescene path until
+/// OWE catches up.
+///
+/// `BTreeMap` rather than `HashMap` so the value is `Eq + Ord` and
+/// stable across hash randomization (test determinism).
+type IdentityKey = std::collections::BTreeMap<String, String>;
+
+fn identity_view(req: &SpawnRequest, def: &RendererDef) -> IdentityKey {
+    identity_view_from_metadata(&req.metadata, def)
+}
+
+fn identity_view_from_metadata(
+    metadata: &HashMap<String, String>,
+    def: &RendererDef,
+) -> IdentityKey {
+    let schema_less = !crate::plugin::renderer_registry::manifest_has_schema(def);
+    let mut out = IdentityKey::new();
+    if schema_less {
+        // Preserve today's behaviour: every metadata entry is
+        // identity. Covers wescene's current manifest.
+        for (k, v) in metadata {
+            out.insert(k.clone(), v.clone());
+        }
+        return out;
+    }
+    for (k, v) in metadata {
+        let is_identity = if let Some(setting) = def.settings.get(k) {
+            setting.identity
+        } else {
+            // Anything not in settings — `path`, extras, unknown — is
+            // identity. Resource keys are always identity-coupled to
+            // the spawn.
+            true
+        };
+        if is_identity {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// Runtime-tunable subset of `req.metadata`: keys that the manifest
+/// schema declares as `identity = false`. Schema-less manifests yield
+/// an empty map (no key is hot-applicable until the manifest opts in).
+fn runtime_view(req: &SpawnRequest, def: &RendererDef) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if def.settings.is_empty() {
+        return out;
+    }
+    for (k, v) in &req.metadata {
+        if let Some(setting) = def.settings.get(k) {
+            if !setting.identity {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Seed for `RendererHandle.runtime_settings`: the `identity = false`
+/// slice of the SpawnRequest's metadata. Identity-tagged settings
+/// don't belong here — those force a respawn on change, so caching
+/// them would be misleading.
+fn initial_runtime_settings(
+    req: &SpawnRequest,
+    def: &RendererDef,
+) -> HashMap<String, String> {
+    runtime_view(req, def)
+}
+
+/// Run the post-accept handshake on a blocking std `UnixStream`:
+/// send the typed `Init` request, then read exactly one event. On
+/// `Ready` return the renderer's `DrmNode`; on `InitNack` surface a
+/// readable error; any other event is treated as a protocol violation
+/// (caller is expected to kill the child).
+///
+/// Factored out of `RendererManager::spawn` so unit tests can drive
+/// it directly over a `UnixStream::pair()` without booting a child
+/// process.
+pub(crate) fn run_init_handshake(
+    sock: &StdUnixStream,
+    init: &ControlMsg,
+) -> Result<DrmNode> {
+    send_control(sock, init, &[]).map_err(|e| anyhow!("send Init: {e}"))?;
+    let (evt, fds) = recv_event(sock).map_err(|e| anyhow!("recv Ready: {e}"))?;
+    match evt {
+        EventMsg::Ready {
+            drm_render_major,
+            drm_render_minor,
+        } => {
+            if !fds.is_empty() {
+                log::warn!("Ready unexpectedly carried {} fds; dropping", fds.len());
+            }
+            Ok(DrmNode {
+                major: drm_render_major,
+                minor: drm_render_minor,
+            })
+        }
+        EventMsg::InitNack {
+            received_spawn_version,
+            supported_spawn_version,
+            reason,
+        } => Err(anyhow!(
+            "renderer rejected Init: {reason} (received spawn_version={received_spawn_version}, \
+             supported={supported_spawn_version})"
+        )),
+        other => Err(anyhow!(
+            "host emitted {:?} before Ready; aborting spawn",
+            other
+        )),
+    }
+}
+
 #[allow(dead_code)]
 fn _assert_path_ok<P: AsRef<std::path::Path>>(_p: P) {} // compile-time shim
 
@@ -1185,6 +1531,7 @@ impl RendererHandle {
             release_syncobj: Arc::new(StdMutex::new(None)),
             format_caps: Arc::new(StdMutex::new(None)),
             last_dispatched_scheme: Arc::new(StdMutex::new(None)),
+            runtime_settings: Arc::new(StdMutex::new(HashMap::new())),
             frame_record_tx: None,
             pending_configure: Arc::new(StdMutex::new(None)),
             child: Arc::new(TokioMutex::new(None)),
@@ -1200,5 +1547,582 @@ impl RendererManager {
     pub async fn register_test_handle(&self, handle: Arc<RendererHandle>) {
         let mut inner = self.inner.lock().await;
         inner.renderers.insert(handle.id.clone(), handle);
+    }
+}
+
+#[cfg(test)]
+mod init_handshake_tests {
+    use super::*;
+    use crate::ipc::uds::send_event;
+    use crate::plugin::renderer_registry::{SettingDef, SettingType};
+    use std::path::PathBuf;
+    use std::thread;
+
+    fn def_legacy(name: &str) -> RendererDef {
+        // Legacy (no-schema) manifest: build_init_msg falls back to
+        // the hard-coded primary-key priority list.
+        RendererDef {
+            name: name.to_string(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["scene".to_string()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: None,
+            extras: Vec::new(),
+            settings: Default::default(),
+        }
+    }
+
+    fn def_scene_schema() -> RendererDef {
+        RendererDef {
+            name: "wescene-renderer".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["scene".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: Some(1),
+            extras: vec!["assets".into(), "workshop_id".into()],
+            settings: Default::default(),
+        }
+    }
+
+    fn def_mpv_schema() -> RendererDef {
+        let mut ps = HashMap::new();
+        ps.insert(
+            "loop_file".to_string(),
+            SettingDef {
+                ty: SettingType::String,
+                default: toml::Value::String("inf".into()),
+                identity: false,
+            },
+        );
+        RendererDef {
+            name: "waywallen-mpv".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["video".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: Some(1),
+            extras: Vec::new(),
+            settings: ps,
+        }
+    }
+
+    #[test]
+    fn legacy_manifest_falls_back_to_primary_key_priority_list() {
+        let mut metadata = HashMap::new();
+        metadata.insert("scene".to_string(), "/tmp/scene.pkg".to_string());
+        metadata.insert("assets".to_string(), "/tmp/assets".to_string());
+        metadata.insert("workshop_id".to_string(), "12345".to_string());
+        let req = SpawnRequest {
+            wp_type: "scene".into(),
+            metadata,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            test_pattern: false,
+        };
+        let msg = build_init_msg(&req, &def_legacy("wescene-renderer")).expect("ok");
+        match msg {
+            ControlMsg::Init {
+                spawn_version,
+                renderer_name,
+                extent_w,
+                extent_h,
+                fps,
+                test_pattern,
+                resource_kind,
+                resource_primary,
+                resource_extras,
+                settings,
+            } => {
+                assert_eq!(spawn_version, SPAWN_VERSION);
+                assert_eq!(renderer_name, "wescene-renderer");
+                assert_eq!(extent_w, 1920);
+                assert_eq!(extent_h, 1080);
+                assert_eq!(fps, 30);
+                assert_eq!(test_pattern, 0);
+                assert_eq!(resource_kind, "scene");
+                assert_eq!(resource_primary, "/tmp/scene.pkg");
+                // build_init_msg sorts extras for determinism.
+                assert_eq!(
+                    resource_extras,
+                    vec![
+                        ("assets".to_string(), "/tmp/assets".to_string()),
+                        ("workshop_id".to_string(), "12345".to_string()),
+                    ]
+                );
+                // No schema → no settings.
+                assert!(settings.is_empty());
+            }
+            other => panic!("expected ControlMsg::Init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_manifest_falls_back_to_video_then_image_then_path() {
+        let mut metadata = HashMap::new();
+        metadata.insert("video".to_string(), "/tmp/clip.mp4".to_string());
+        metadata.insert("loop_file".to_string(), "yes".to_string());
+        let req = SpawnRequest {
+            wp_type: "video".into(),
+            metadata,
+            width: 800,
+            height: 600,
+            fps: 60,
+            test_pattern: true,
+        };
+        let msg = build_init_msg(&req, &def_legacy("waywallen-mpv")).expect("ok");
+        match msg {
+            ControlMsg::Init {
+                resource_primary,
+                resource_extras,
+                test_pattern,
+                ..
+            } => {
+                assert_eq!(resource_primary, "/tmp/clip.mp4");
+                assert_eq!(test_pattern, 1);
+                assert_eq!(
+                    resource_extras,
+                    vec![("loop_file".to_string(), "yes".to_string())]
+                );
+            }
+            other => panic!("expected ControlMsg::Init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schema_driven_path_extraction() {
+        // Manifest declares schema-active extras; resource_primary is
+        // taken from metadata["path"] regardless of legacy priority
+        // ordering.
+        let mut metadata = HashMap::new();
+        metadata.insert("path".to_string(), "/tmp/wp.pkg".to_string());
+        metadata.insert("assets".to_string(), "/tmp/assets".to_string());
+        let req = SpawnRequest {
+            wp_type: "scene".into(),
+            metadata,
+            width: 1280,
+            height: 720,
+            fps: 60,
+            test_pattern: false,
+        };
+        let msg = build_init_msg(&req, &def_scene_schema()).expect("ok");
+        match msg {
+            ControlMsg::Init {
+                spawn_version,
+                resource_kind,
+                resource_primary,
+                resource_extras,
+                ..
+            } => {
+                // spawn_version pulled from manifest, not the daemon
+                // constant.
+                assert_eq!(spawn_version, 1);
+                // resource_kind is always req.wp_type — the manifest
+                // no longer supplies it.
+                assert_eq!(resource_kind, "scene");
+                assert_eq!(resource_primary, "/tmp/wp.pkg");
+                assert_eq!(
+                    resource_extras,
+                    vec![("assets".to_string(), "/tmp/assets".to_string())]
+                );
+            }
+            other => panic!("expected ControlMsg::Init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn schema_validation_missing_path_errors() {
+        // No `path` in metadata → schema requires it → build fails
+        // before any renderer is spawned.
+        let metadata = HashMap::new();
+        let req = SpawnRequest {
+            wp_type: "scene".into(),
+            metadata,
+            width: 800,
+            height: 600,
+            fps: 30,
+            test_pattern: false,
+        };
+        let err = build_init_msg(&req, &def_scene_schema())
+            .expect_err("must error on missing path");
+        let s = err.to_string();
+        assert!(
+            s.contains("'path'") && s.contains("validation failed"),
+            "expected validation error mentioning 'path', got: {s}"
+        );
+    }
+
+    #[test]
+    fn schema_default_fills_missing_setting() {
+        // mpv schema declares loop_file with default = "inf".
+        // Metadata only carries `path`; default flows into Init.
+        let mut metadata = HashMap::new();
+        metadata.insert("path".to_string(), "/tmp/clip.mp4".to_string());
+        let req = SpawnRequest {
+            wp_type: "video".into(),
+            metadata,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            test_pattern: false,
+        };
+        let msg = build_init_msg(&req, &def_mpv_schema()).expect("ok");
+        match msg {
+            ControlMsg::Init {
+                settings, ..
+            } => {
+                assert_eq!(
+                    settings,
+                    vec![("loop_file".to_string(), "inf".to_string())]
+                );
+            }
+            other => panic!("expected ControlMsg::Init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_handshake_init_nack_aborts() {
+        // Daemon side ↔ renderer side over a socketpair: we drive
+        // `run_init_handshake` from the daemon side and have a tiny
+        // peer thread reply with an InitNack on the renderer side.
+        let (daemon, renderer) =
+            StdUnixStream::pair().expect("UnixStream::pair");
+        daemon
+            .set_nonblocking(false)
+            .expect("set_nonblocking(false) on daemon side");
+        renderer
+            .set_nonblocking(false)
+            .expect("set_nonblocking(false) on renderer side");
+
+        let peer = thread::spawn(move || {
+            // Receive the Init then immediately reply with InitNack.
+            let (got, _fds) = crate::ipc::uds::recv_control(&renderer)
+                .expect("renderer recv Init");
+            assert!(matches!(got, ControlMsg::Init { .. }));
+            send_event(
+                &renderer,
+                &EventMsg::InitNack {
+                    received_spawn_version: 999,
+                    supported_spawn_version: SPAWN_VERSION,
+                    reason: "unsupported spawn_version".into(),
+                },
+                &[],
+            )
+            .expect("renderer send InitNack");
+        });
+
+        let mut metadata = HashMap::new();
+        metadata.insert("scene".to_string(), "/tmp/scene.pkg".to_string());
+        let req = SpawnRequest {
+            wp_type: "scene".into(),
+            metadata,
+            width: 800,
+            height: 600,
+            fps: 30,
+            test_pattern: false,
+        };
+        let init = build_init_msg(&req, &def_legacy("wescene-renderer")).expect("ok");
+        let err = run_init_handshake(&daemon, &init)
+            .expect_err("InitNack must abort the handshake");
+        let s = err.to_string();
+        assert!(
+            s.contains("renderer rejected Init"),
+            "unexpected error: {s}"
+        );
+        assert!(s.contains("unsupported spawn_version"), "unexpected error: {s}");
+
+        peer.join().expect("peer thread");
+    }
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::*;
+    use crate::plugin::renderer_registry::{
+        RendererDef, RendererRegistry, SettingDef, SettingType,
+    };
+    use std::path::PathBuf;
+
+    fn def_mpv() -> RendererDef {
+        let mut ps = HashMap::new();
+        ps.insert(
+            "loop_file".to_string(),
+            SettingDef {
+                ty: SettingType::String,
+                default: toml::Value::String("inf".into()),
+                identity: false,
+            },
+        );
+        ps.insert(
+            "hwdec".to_string(),
+            SettingDef {
+                ty: SettingType::String,
+                default: toml::Value::String("auto".into()),
+                identity: false,
+            },
+        );
+        RendererDef {
+            name: "waywallen-mpv".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["video".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: Some(1),
+            extras: Vec::new(),
+            settings: ps,
+        }
+    }
+
+    #[test]
+    fn identity_view_separates_runtime_from_identity() {
+        let def = def_mpv();
+        let mut metadata = HashMap::new();
+        metadata.insert("path".into(), "/clip.mp4".into());
+        metadata.insert("loop_file".into(), "no".into()); // identity = false
+        metadata.insert("hwdec".into(), "auto-safe".into()); // identity = false
+        let req = SpawnRequest {
+            wp_type: "video".into(),
+            metadata,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            test_pattern: false,
+        };
+        let id = identity_view(&req, &def);
+        // `path` is identity (resource primary); loop_file/hwdec are
+        // runtime so they MUST NOT appear in the identity view.
+        assert_eq!(id.get("path").map(|s| s.as_str()), Some("/clip.mp4"));
+        assert!(id.get("loop_file").is_none());
+        assert!(id.get("hwdec").is_none());
+
+        let rt = runtime_view(&req, &def);
+        assert_eq!(rt.get("loop_file").map(|s| s.as_str()), Some("no"));
+        assert_eq!(rt.get("hwdec").map(|s| s.as_str()), Some("auto-safe"));
+        assert!(rt.get("path").is_none());
+    }
+
+    #[test]
+    fn identity_view_schema_less_treats_all_as_identity() {
+        // Wescene's manifest currently has no settings, no extras —
+        // all metadata must be identity so today's behaviour is
+        // preserved.
+        let def = RendererDef {
+            name: "wescene-renderer".into(),
+            bin: PathBuf::from("/dev/null"),
+            types: vec!["scene".into()],
+            priority: 100,
+            version: "v0.0.0".into(),
+            spawn_version: None,
+            extras: Vec::new(),
+            settings: HashMap::new(),
+        };
+        let mut metadata = HashMap::new();
+        metadata.insert("scene".into(), "/wp.pkg".into());
+        metadata.insert("volume".into(), "0.5".into());
+        let req = SpawnRequest {
+            wp_type: "scene".into(),
+            metadata,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            test_pattern: false,
+        };
+        let id = identity_view(&req, &def);
+        assert_eq!(id.get("scene").map(|s| s.as_str()), Some("/wp.pkg"));
+        assert_eq!(id.get("volume").map(|s| s.as_str()), Some("0.5"));
+        let rt = runtime_view(&req, &def);
+        assert!(rt.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_reusable_returns_delta_when_identity_matches() {
+        let mut registry = RendererRegistry::new();
+        registry.register(def_mpv());
+        let mgr = RendererManager::new(registry);
+
+        // Build a live mpv-named handle directly: metadata holds the
+        // video path (identity) and a stale loop_file value. The
+        // runtime_settings cache reflects the prior ApplySettings
+        // state — `loop_file = inf`.
+        let mut handle_md = HashMap::new();
+        handle_md.insert("path".into(), "/clip.mp4".into());
+        handle_md.insert("loop_file".into(), "inf".into());
+        let (_a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel::<EventMsg>(8);
+        let h = Arc::new(RendererHandle {
+            id: "h1".into(),
+            wp_type: "video".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            metadata: handle_md,
+            name: "waywallen-mpv".into(),
+            pid: None,
+            gpu: DrmNode::UNKNOWN,
+            sock: Arc::new(StdMutex::new(_a)),
+            events: events_tx,
+            bind_snapshot: Arc::new(StdMutex::new(None)),
+            sync_fds: Arc::new(StdMutex::new(std::collections::VecDeque::new())),
+            release_syncobj: Arc::new(StdMutex::new(None)),
+            format_caps: Arc::new(StdMutex::new(None)),
+            last_dispatched_scheme: Arc::new(StdMutex::new(None)),
+            runtime_settings: Arc::new(StdMutex::new({
+                let mut m = HashMap::new();
+                m.insert("loop_file".to_string(), "inf".to_string());
+                m
+            })),
+            frame_record_tx: None,
+            pending_configure: Arc::new(StdMutex::new(None)),
+            child: Arc::new(TokioMutex::new(None)),
+        });
+        mgr.register_test_handle(h).await;
+
+        // Same identity (same path), but loop_file flipped:
+        // identity hit, delta = {loop_file=no}.
+        let mut req_md = HashMap::new();
+        req_md.insert("path".into(), "/clip.mp4".into());
+        req_md.insert("loop_file".into(), "no".into());
+        let req = SpawnRequest {
+            wp_type: "video".into(),
+            metadata: req_md,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            test_pattern: false,
+        };
+        let (id, delta, fps_change) = mgr
+            .find_reusable(&req)
+            .await
+            .expect("identity hit expected");
+        assert_eq!(id, "h1");
+        assert_eq!(delta.get("loop_file").map(|s| s.as_str()), Some("no"));
+        assert!(delta.get("path").is_none(), "path must not be in delta");
+        assert!(fps_change.is_none(), "fps not declared as runtime in mpv schema");
+    }
+
+    #[tokio::test]
+    async fn find_reusable_misses_on_identity_change() {
+        let mut registry = RendererRegistry::new();
+        registry.register(def_mpv());
+        let mgr = RendererManager::new(registry);
+
+        // Live handle for /clip.mp4, but the request asks for /other.mp4.
+        let (_a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (events_tx, _) = tokio::sync::broadcast::channel::<EventMsg>(8);
+        let mut md = HashMap::new();
+        md.insert("path".into(), "/clip.mp4".into());
+        let h = Arc::new(RendererHandle {
+            id: "h1".into(),
+            wp_type: "video".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            metadata: md,
+            name: "waywallen-mpv".into(),
+            pid: None,
+            gpu: DrmNode::UNKNOWN,
+            sock: Arc::new(StdMutex::new(_a)),
+            events: events_tx,
+            bind_snapshot: Arc::new(StdMutex::new(None)),
+            sync_fds: Arc::new(StdMutex::new(std::collections::VecDeque::new())),
+            release_syncobj: Arc::new(StdMutex::new(None)),
+            format_caps: Arc::new(StdMutex::new(None)),
+            last_dispatched_scheme: Arc::new(StdMutex::new(None)),
+            runtime_settings: Arc::new(StdMutex::new(HashMap::new())),
+            frame_record_tx: None,
+            pending_configure: Arc::new(StdMutex::new(None)),
+            child: Arc::new(TokioMutex::new(None)),
+        });
+        mgr.register_test_handle(h).await;
+
+        let mut req_md = HashMap::new();
+        req_md.insert("path".into(), "/other.mp4".into());
+        let req = SpawnRequest {
+            wp_type: "video".into(),
+            metadata: req_md,
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            test_pattern: false,
+        };
+        assert!(
+            mgr.find_reusable(&req).await.is_none(),
+            "different primary key value must miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_apply_settings_writes_wire_and_updates_cache() {
+        // Direct end-to-end: spawn a socketpair, plug one side into a
+        // RendererHandle's sock, call send_apply_settings, drain the
+        // wire on the other side, assert the kv arrived.
+        let mut registry = RendererRegistry::new();
+        registry.register(def_mpv());
+        let mgr = RendererManager::new(registry);
+
+        let (daemon_side, renderer_side) =
+            std::os::unix::net::UnixStream::pair().unwrap();
+        daemon_side.set_nonblocking(false).unwrap();
+        renderer_side.set_nonblocking(false).unwrap();
+
+        let (events_tx, _) = tokio::sync::broadcast::channel::<EventMsg>(8);
+        let h = Arc::new(RendererHandle {
+            id: "h1".into(),
+            wp_type: "video".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            metadata: HashMap::new(),
+            name: "waywallen-mpv".into(),
+            pid: None,
+            gpu: DrmNode::UNKNOWN,
+            sock: Arc::new(StdMutex::new(daemon_side)),
+            events: events_tx,
+            bind_snapshot: Arc::new(StdMutex::new(None)),
+            sync_fds: Arc::new(StdMutex::new(std::collections::VecDeque::new())),
+            release_syncobj: Arc::new(StdMutex::new(None)),
+            format_caps: Arc::new(StdMutex::new(None)),
+            last_dispatched_scheme: Arc::new(StdMutex::new(None)),
+            runtime_settings: Arc::new(StdMutex::new(HashMap::new())),
+            frame_record_tx: None,
+            pending_configure: Arc::new(StdMutex::new(None)),
+            child: Arc::new(TokioMutex::new(None)),
+        });
+        mgr.register_test_handle(Arc::clone(&h)).await;
+
+        // Renderer-side reader running in a thread to drain the wire.
+        let peer = std::thread::spawn(move || {
+            let (req, _fds) =
+                crate::ipc::uds::recv_control(&renderer_side).expect("recv");
+            req
+        });
+
+        mgr.send_apply_settings(
+            "h1",
+            vec![("loop_file".into(), "no".into())],
+            None,
+        )
+        .await
+        .expect("send_apply_settings ok");
+
+        let got = peer.join().expect("peer joined");
+        match got {
+            ControlMsg::ApplySettings {
+                settings,
+                fps,
+            } => {
+                assert_eq!(
+                    settings,
+                    vec![("loop_file".into(), "no".into())]
+                );
+                assert_eq!(fps, 0, "None → wire 0");
+            }
+            other => panic!("expected ApplySettings, got {other:?}"),
+        }
+        // Cache merged.
+        let cache = h.runtime_settings_snapshot();
+        assert_eq!(cache.get("loop_file").map(|s| s.as_str()), Some("no"));
     }
 }

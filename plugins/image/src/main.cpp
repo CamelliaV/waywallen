@@ -53,6 +53,13 @@ struct Options {
     std::exit(1);
 }
 
+// Step 3: spawn-time params (width/height/image path) come from the
+// daemon's typed Init message after we connect, not from argv. Only
+// `--ipc` plus the standalone-debug flags (`--decode-only`,
+// `--vulkan-probe`, `--print-caps`) are still parsed here. Unknown
+// args from the daemon's legacy double-send are silently ignored:
+// daemon keeps emitting `--width N --height N --image PATH ...` until
+// every renderer (incl. wescene in OWE) has migrated.
 Options parse_args(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
@@ -62,13 +69,26 @@ Options parse_args(int argc, char** argv) {
             return argv[++i];
         };
         if (a == "--ipc")              o.ipc_path = next();
-        else if (a == "--width")       o.width = static_cast<uint32_t>(std::strtoul(next().c_str(), nullptr, 10));
-        else if (a == "--height")      o.height = static_cast<uint32_t>(std::strtoul(next().c_str(), nullptr, 10));
-        else if (a == "--image" || a == "--path") o.image_path = next();
         else if (a == "--decode-only") o.decode_only = true;
         else if (a == "--vulkan-probe") o.vulkan_probe = true;
         else if (a == "--print-caps")  o.print_caps = true;
-        else ww_bridge_skip_unknown_kv_arg(&i, argc, argv);
+        else if (a == "--width" || a == "--height" || a == "--image" || a == "--path") {
+            // Legacy daemon double-send — ignore both flag and value.
+            (void)next();
+        }
+        else if (a == "--test-pattern" || a == "--fps") {
+            // Legacy daemon double-send. `--test-pattern` is a bare
+            // bool flag (no value); `--fps N` carries a value but the
+            // image renderer doesn't use it.
+            if (a == "--fps") (void)next();
+        }
+        // Anything else with a `--key value` shape: skip the value to
+        // stay tolerant of the legacy daemon argv. Bare `--flag` is
+        // simply ignored. (No bridge helper anymore.)
+        else if (a.size() >= 2 && a[0] == '-' && a[1] == '-' && i + 1 < argc) {
+            std::string nxt = argv[i + 1];
+            if (!(nxt.size() >= 2 && nxt[0] == '-' && nxt[1] == '-')) ++i;
+        }
     }
     return o;
 }
@@ -241,20 +261,40 @@ void apply_negotiate_request(HostState& host, ww_image::VkProducer& producer,
                  static_cast<unsigned long long>(d.modifier));
 }
 
-void apply_control(HostState& host, const ww_bridge_control_t& c) {
+void apply_control(HostState& host, ww_bridge_control_t& c) {
     switch (c.op) {
-    case WW_REQ_HELLO:
+    case WW_REQ_INIT:
+        // Init is consumed by ww_bridge_recv_init at the top of main
+        // before the reader thread is even spawned. Anything that
+        // arrives here is either a buggy daemon resending it or a
+        // protocol violation; log and ignore to stay liberal.
+        std::fprintf(stderr,
+                     "waywallen-image-renderer: unexpected late Init; ignoring\n");
+        break;
     case WW_REQ_PLAY:
     case WW_REQ_PAUSE:
     case WW_REQ_MOUSE:
     case WW_REQ_SET_FPS:
         break;
-    case WW_REQ_LOAD_SCENE:
-        std::fprintf(stderr,
-                     "waywallen-image-renderer: load_scene pkg=%s "
-                     "(hot-swap not yet implemented)\n",
-                     c.u.load_scene.pkg ? c.u.load_scene.pkg : "(null)");
+    case WW_REQ_APPLY_SETTINGS: {
+        // The image renderer's manifest declares no settings, so an
+        // ApplySettings should arrive empty. If the daemon sends a
+        // non-empty kv list (e.g. the user added a tunable key in
+        // `settings.toml` that no schema declares), warn-log and
+        // discard so we don't surprise the user with silent drops.
+        ww_bridge_apply_settings_t as {};
+        if (ww_bridge_apply_settings_from_control(&c, &as) == 0) {
+            if (as.settings.count > 0) {
+                std::fprintf(stderr,
+                             "waywallen-image-renderer: ApplySettings "
+                             "with %u keys but no hot-reloadable settings; "
+                             "ignoring\n",
+                             as.settings.count);
+            }
+            ww_bridge_apply_settings_free(&as);
+        }
         break;
+    }
     case WW_REQ_SHUTDOWN:
         signal_shutdown(host);
         break;
@@ -519,8 +559,43 @@ int main(int argc, char** argv) {
 
     ::prctl(PR_SET_PDEATHSIG, SIGTERM);
 
+    /* --- Connect first, then read the Init message ---
+     *
+     * Step 3: connect() moved to before any decode / Vulkan init so
+     * the daemon's typed Init payload (extent + image path) drives
+     * the GPU pipeline rather than CLI argv. The legacy `--image`/
+     * `--width`/`--height` argv is still emitted by the daemon
+     * double-send but we ignore it here. */
+    HostState host;
+    host.sock = ww_bridge_connect(opt.ipc_path.c_str());
+    if (host.sock < 0)
+        die("ww_bridge_connect: " + std::string(std::strerror(-host.sock)));
+
+    ww_bridge_init_t init {};
+    if (int rc = ww_bridge_recv_init(host.sock, &init); rc < 0) {
+        // Surface the rejection structured-ly so the daemon's spawn()
+        // gets a useful error string. `init.spawn_version` is filled
+        // by recv_init even on -EPROTO (version mismatch).
+        const char* reason = (rc == -EPROTO)
+            ? "init: protocol error or unsupported spawn_version"
+            : "init: recv failed";
+        ww_bridge_send_init_nack(host.sock, init.spawn_version,
+                                 WW_BRIDGE_SUPPORTED_SPAWN_VERSION,
+                                 reason);
+        ww_bridge_init_free(&init);
+        die(std::string(reason) + " rc=" + std::to_string(rc));
+    }
+
+    // Canonical resource key is "path" (v6); resource_primary holds
+    // the on-disk path.
+    opt.width      = init.extent_w;
+    opt.height     = init.extent_h;
+    if (init.resource_primary && init.resource_primary[0])
+        opt.image_path = init.resource_primary;
+    ww_bridge_init_free(&init);
+
     /* --- Decode + Vulkan setup --- */
-    if (opt.image_path.empty()) die("--image is required");
+    if (opt.image_path.empty()) die("Init.resource_primary (image path) is required");
     ww_image::DecodeError derr;
     ww_image::RgbaBuf rgba_buf = ww_image::decode_to_rgba(
         opt.image_path, opt.width, opt.height, &derr);
@@ -536,10 +611,6 @@ int main(int argc, char** argv) {
     ww_bridge_vk_log_gpu_info("waywallen-image-renderer", &vdt,
                               producer->physical_device());
 
-    HostState host;
-    host.sock = ww_bridge_connect(opt.ipc_path.c_str());
-    if (host.sock < 0)
-        die("ww_bridge_connect: " + std::string(std::strerror(-host.sock)));
     host.rgba_data = rgba_buf.data.data();
     host.rgba_size = rgba_buf.data.size();
 

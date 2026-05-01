@@ -256,9 +256,11 @@ async fn run_one_pair(
         name: "image-test".to_string(),
         bin: renderer_bin.to_path_buf(),
         types: vec!["image".to_string()],
-        extra_args: vec![],
         priority: 100,
         version: "v0.0.0".to_string(),
+        spawn_version: None,
+        extras: Vec::new(),
+        settings: Default::default(),
     });
 
     let mgr = Arc::new(RendererManager::new(registry));

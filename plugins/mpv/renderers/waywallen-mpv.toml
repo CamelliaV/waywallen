@@ -2,12 +2,18 @@
 #
 # Installed to <prefix>/share/waywallen/renderers/waywallen-mpv.toml.
 # The daemon spawns `waywallen-mpv-renderer` for any wallpaper with
-# wp_type = "video". Source plugins forward the video file path in
-# their metadata as `video` or `path`, which the daemon surfaces to
-# the binary as `--video <path>` / `--path <path>`.
+# wp_type = "video". The `[renderer.settings]` table below is the
+# typed schema the daemon validates source-plugin metadata against
+# before forking the child; the canonical resource path travels in
+# `metadata["path"]` (no per-renderer primary key any more).
 
 [renderer]
 name = "waywallen-mpv"
 bin = "../../../bin/waywallen-mpv-renderer"
 types = ["video"]
 priority = 100
+spawn_version = 1
+
+[renderer.settings]
+loop_file = { type = "string", default = "inf",  identity = false }
+hwdec     = { type = "string", default = "auto", identity = false }
