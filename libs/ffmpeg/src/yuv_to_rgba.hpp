@@ -64,6 +64,42 @@ public:
                      size_t          nv12_size,
                      std::string*    err);
 
+    // Zero-copy variant: import the Y/UV VkImages directly from an
+    // AVVkFrame (DISABLE_MULTIPLANE-allocated). Waits on the supplied
+    // timeline semaphores at their current values, signals incremented
+    // values back. The caller MUST update the AVVkFrame's
+    // layout/sem_value/queue_family arrays in place after this call
+    // returns success; we expose the new values via the in/out args.
+    //
+    // `y_image`, `uv_image`: VkImages from the frame (R8 / R8G8).
+    // `y_sem`, `uv_sem`: timeline VkSemaphores per plane.
+    // `y_sem_val_in_out`, `uv_sem_val_in_out`: on input the sem_value
+    //   to wait on; on success rewritten to the value we signaled.
+    // `y_layout_in_out`, `uv_layout_in_out`: same idea for layout.
+    // `y_qf_in_out`, `uv_qf_in_out`: same for queue family.
+    // `src_w`, `src_h`: source frame extent (the frame's pixel size).
+    // `dst`, `dst_w`, `dst_h`: target storage image + extent.
+    // Returns sync_fd (binary, signaled when dispatch completes) or -1.
+    struct VkFrameImports {
+        VkImage         y_image;
+        VkImage         uv_image;
+        VkSemaphore     y_sem;
+        VkSemaphore     uv_sem;
+        uint64_t*       y_sem_val_in_out;
+        uint64_t*       uv_sem_val_in_out;
+        VkImageLayout*  y_layout_in_out;
+        VkImageLayout*  uv_layout_in_out;
+        uint32_t*       y_qf_in_out;
+        uint32_t*       uv_qf_in_out;
+        uint32_t        src_w;
+        uint32_t        src_h;
+    };
+    int convert_av_vk_frame(const VkFrameImports& imports,
+                            VkImage      dst,
+                            uint32_t     dst_w,
+                            uint32_t     dst_h,
+                            std::string* err);
+
 private:
     YuvToRgba() = default;
 
@@ -122,10 +158,15 @@ private:
     VkDescriptorSet  dset_          { VK_NULL_HANDLE };
 
     // Single-slot deferred destruction queue for the prior frame's dst
-    // VkImageView. Safe because convert_nv12 waits on done_fence_ before
+    // VkImageView. Safe because convert_* waits on done_fence_ before
     // doing anything else, which proves the GPU is no longer using the
-    // previous descriptor set's binding-2 reference.
+    // previous descriptor set's binding-2 reference. The shared-device
+    // import path additionally cycles last_y_view_ / last_uv_view_
+    // because Y/UV bindings now alias the AVVkFrame's images instead of
+    // our private staging-uploaded ones.
     VkImageView      last_dst_view_ { VK_NULL_HANDLE };
+    VkImageView      last_y_view_   { VK_NULL_HANDLE };
+    VkImageView      last_uv_view_  { VK_NULL_HANDLE };
 
     PFN_vkGetSemaphoreFdKHR vkGetSemaphoreFdKHR_ { nullptr };
 };

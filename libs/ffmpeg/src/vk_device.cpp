@@ -44,22 +44,6 @@ bool device_has_ext(VkPhysicalDevice phys, const char* name) {
     return false;
 }
 
-bool pick_queue_family(VkPhysicalDevice phys, uint32_t* out) {
-    uint32_t n = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(phys, &n, nullptr);
-    std::vector<VkQueueFamilyProperties> q(n);
-    vkGetPhysicalDeviceQueueFamilyProperties(phys, &n, q.data());
-    for (uint32_t i = 0; i < n; ++i) {
-        if (q[i].queueFlags
-            & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT
-               | VK_QUEUE_TRANSFER_BIT)) {
-            *out = i;
-            return true;
-        }
-    }
-    return false;
-}
-
 } // namespace
 
 
@@ -96,21 +80,25 @@ Producer::create_with_render_node(uint32_t width, uint32_t height,
     self->width_ = width;
     self->height_ = height;
 
-    const char* inst_exts[] = {
+    /* API 1.3 is the minimum FFmpeg's AV_HWDEVICE_TYPE_VULKAN requires
+     * (see hwcontext_vulkan.h: "Must be at least version 1.3"). */
+    self->enabled_inst_exts_ = {
         VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
         VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME,
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
     };
     VkApplicationInfo app {};
     app.sType            = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "waywallen-ffvk";
-    app.apiVersion       = VK_API_VERSION_1_1;
+    app.apiVersion       = VK_API_VERSION_1_3;
+    self->instance_api_version_ = VK_API_VERSION_1_3;
 
     VkInstanceCreateInfo ici {};
     ici.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo        = &app;
-    ici.enabledExtensionCount   = static_cast<uint32_t>(std::size(inst_exts));
-    ici.ppEnabledExtensionNames = inst_exts;
+    ici.enabledExtensionCount   = static_cast<uint32_t>(self->enabled_inst_exts_.size());
+    ici.ppEnabledExtensionNames = self->enabled_inst_exts_.data();
     if (VkResult r = vkCreateInstance(&ici, nullptr, &self->instance_);
         r != VK_SUCCESS) {
         fail(err, std::string("vkCreateInstance: ") + vk_result_str(r));
@@ -188,27 +176,122 @@ Producer::create_with_render_node(uint32_t width, uint32_t height,
         return nullptr;
     }
 
-    if (!pick_queue_family(self->phys_, &self->queue_family_)) {
-        fail(err, "no suitable queue family");
-        return nullptr;
+    /* Enumerate ALL queue families on the device. We create one queue
+     * from each family so FFmpeg's AV_HWDEVICE_TYPE_VULKAN can pick
+     * whichever family suits its needs (graphics / compute / transfer /
+     * video decode/encode). The single queue we use ourselves comes from
+     * the first family with GRAPHICS|COMPUTE|TRANSFER capability. */
+    {
+        uint32_t n = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(self->phys_, &n, nullptr);
+        if (n == 0) { fail(err, "no queue families"); return nullptr; }
+        std::vector<VkQueueFamilyProperties> qprops(n);
+        vkGetPhysicalDeviceQueueFamilyProperties(self->phys_, &n, qprops.data());
+
+        self->queue_families_.reserve(n);
+        bool picked_self = false;
+        for (uint32_t i = 0; i < n; ++i) {
+            QueueFamily q {};
+            q.index      = i;
+            q.flags      = qprops[i].queueFlags;
+            q.video_caps = 0;  /* video_caps probing requires VK_KHR_video_queue
+                                * — left at 0; FFmpeg falls back to flag-based
+                                * discovery when this is unset. */
+            self->queue_families_.push_back(q);
+            if (!picked_self
+                && (q.flags & (VK_QUEUE_GRAPHICS_BIT
+                               | VK_QUEUE_COMPUTE_BIT
+                               | VK_QUEUE_TRANSFER_BIT))) {
+                self->queue_family_ = i;
+                picked_self = true;
+            }
+        }
+        if (!picked_self) {
+            fail(err, "no graphics/compute/transfer queue family");
+            return nullptr;
+        }
     }
 
-    float prio = 1.0f;
-    VkDeviceQueueCreateInfo qci {};
-    qci.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qci.queueFamilyIndex = self->queue_family_;
-    qci.queueCount       = 1;
-    qci.pQueuePriorities = &prio;
+    /* One queue per family. */
+    std::vector<float>                   prios(self->queue_families_.size(), 1.0f);
+    std::vector<VkDeviceQueueCreateInfo> qcis;
+    qcis.reserve(self->queue_families_.size());
+    for (const auto& q : self->queue_families_) {
+        VkDeviceQueueCreateInfo qci {};
+        qci.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        qci.queueFamilyIndex = q.index;
+        qci.queueCount       = 1;
+        qci.pQueuePriorities = &prios[0];
+        qcis.push_back(qci);
+    }
 
-    std::vector<const char*> dev_exts(std::begin(req_dev_exts), std::end(req_dev_exts));
-    if (have_drm_ext) dev_exts.push_back(DRM_EXT);
+    /* Required device extensions. */
+    self->enabled_dev_exts_.assign(std::begin(req_dev_exts), std::end(req_dev_exts));
+    if (have_drm_ext) self->enabled_dev_exts_.push_back(DRM_EXT);
+
+    /* Best-effort optional extensions FFmpeg's vulkan path likes. We
+     * only add the ones the device advertises so vkCreateDevice doesn't
+     * fail on a missing-but-requested extension. */
+    static constexpr const char* opt_dev_exts[] = {
+        "VK_KHR_video_queue",
+        "VK_KHR_video_decode_queue",
+        "VK_KHR_video_decode_h264",
+        "VK_KHR_video_decode_h265",
+        "VK_KHR_video_decode_av1",
+        "VK_EXT_external_memory_host",
+        "VK_KHR_push_descriptor",
+        "VK_KHR_synchronization2",
+        "VK_KHR_timeline_semaphore",
+        "VK_EXT_descriptor_buffer",
+        "VK_EXT_shader_object",
+    };
+    for (const char* e : opt_dev_exts) {
+        if (device_has_ext(self->phys_, e)) self->enabled_dev_exts_.push_back(e);
+    }
+
+    /* Enable the 1.2/1.3 features FFmpeg's vulkan decode path expects.
+     * Querying first lets us OR in only the bits the device supports;
+     * vkCreateDevice rejects features the device doesn't advertise. */
+    VkPhysicalDeviceVulkan12Features f12 {};
+    f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceVulkan13Features f13 {};
+    f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    f12.pNext = &f13;
+    VkPhysicalDeviceFeatures2 feats2 {};
+    feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    feats2.pNext = &f12;
+    if (vkGetPhysicalDeviceProperties2_) {
+        auto vkGetPhysicalDeviceFeatures2_ =
+            reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                vkGetInstanceProcAddr(self->instance_,
+                                      "vkGetPhysicalDeviceFeatures2"));
+        if (vkGetPhysicalDeviceFeatures2_)
+            vkGetPhysicalDeviceFeatures2_(self->phys_, &feats2);
+    }
+    /* Drop features the device doesn't have, then keep the ones we
+     * actually want enabled. timelineSemaphore + synchronization2 are
+     * the load-bearing ones for FFmpeg + AVVkFrame. */
+    VkPhysicalDeviceVulkan12Features want12 {};
+    want12.sType                    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    want12.timelineSemaphore        = f12.timelineSemaphore;
+    want12.bufferDeviceAddress      = f12.bufferDeviceAddress;
+    VkPhysicalDeviceVulkan13Features want13 {};
+    want13.sType                    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    want13.synchronization2         = f13.synchronization2;
+    want13.maintenance4             = f13.maintenance4;
+    want12.pNext                    = &want13;
+    VkPhysicalDeviceFeatures2 want_feats2 {};
+    want_feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    want_feats2.pNext = &want12;
+    want_feats2.features.samplerAnisotropy = feats2.features.samplerAnisotropy;
 
     VkDeviceCreateInfo dci {};
     dci.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.queueCreateInfoCount    = 1;
-    dci.pQueueCreateInfos       = &qci;
-    dci.enabledExtensionCount   = static_cast<uint32_t>(dev_exts.size());
-    dci.ppEnabledExtensionNames = dev_exts.data();
+    dci.pNext                   = &want_feats2;
+    dci.queueCreateInfoCount    = static_cast<uint32_t>(qcis.size());
+    dci.pQueueCreateInfos       = qcis.data();
+    dci.enabledExtensionCount   = static_cast<uint32_t>(self->enabled_dev_exts_.size());
+    dci.ppEnabledExtensionNames = self->enabled_dev_exts_.data();
     if (VkResult r = vkCreateDevice(self->phys_, &dci, nullptr, &self->device_);
         r != VK_SUCCESS) {
         fail(err, std::string("vkCreateDevice: ") + vk_result_str(r));

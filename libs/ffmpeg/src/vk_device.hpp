@@ -12,10 +12,22 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
 namespace waywallen::ffvk {
+
+// Per-queue-family record exposed to FFmpeg's AVVulkanDeviceContext::qf[].
+// Producer creates 1 queue from each enumerated family and remembers each
+// family's caps so FFmpeg can pick the right one for video decode/encode.
+struct QueueFamily {
+    uint32_t       index;
+    VkQueueFlags   flags;
+    /* Video codec ops the family advertises (only meaningful when the
+     * device exposes VK_KHR_video_queue). 0 if unknown. */
+    uint32_t       video_caps;
+};
 
 // Bring up a VkInstance/VkPhysicalDevice/VkDevice with the extension set
 // the bridge pool's Vulkan backend needs (DMA-BUF export, modifier
@@ -62,6 +74,13 @@ public:
     uint32_t         width() const  { return width_; }
     uint32_t         height() const { return height_; }
 
+    // Iter (FFmpeg shared device): expose what we negotiated so callers
+    // can hand it to AVVulkanDeviceContext.
+    uint32_t         instance_api_version() const { return instance_api_version_; }
+    const std::vector<const char*>& enabled_instance_extensions() const { return enabled_inst_exts_; }
+    const std::vector<const char*>& enabled_device_extensions()   const { return enabled_dev_exts_; }
+    const std::vector<QueueFamily>& queue_families()              const { return queue_families_; }
+
     // Copy `data` (tightly packed RGBA8, `size` bytes == width*height*4)
     // into `target` VkImage and return an exported sync_fd that signals
     // when the GPU is done writing. The bridge pool takes ownership of
@@ -98,6 +117,12 @@ private:
     bool             have_uuid_ { false };
     uint8_t          device_uuid_[16] { 0 };
     uint8_t          driver_uuid_[16] { 0 };
+
+    /* Records of what we negotiated, exposed to FFmpeg's hwcontext. */
+    uint32_t                 instance_api_version_ { 0 };
+    std::vector<const char*> enabled_inst_exts_;
+    std::vector<const char*> enabled_dev_exts_;
+    std::vector<QueueFamily> queue_families_;
 
     PFN_vkGetSemaphoreFdKHR vkGetSemaphoreFdKHR_ { nullptr };
 };

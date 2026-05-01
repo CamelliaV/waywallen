@@ -127,6 +127,8 @@ YuvToRgba::~YuvToRgba() {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
         if (last_dst_view_)    vkDestroyImageView(device_, last_dst_view_, nullptr);
+        if (last_y_view_)      vkDestroyImageView(device_, last_y_view_, nullptr);
+        if (last_uv_view_)     vkDestroyImageView(device_, last_uv_view_, nullptr);
         if (dpool_)            vkDestroyDescriptorPool(device_, dpool_, nullptr);
         if (signal_sem_)       vkDestroySemaphore(device_, signal_sem_, nullptr);
         if (done_fence_)       vkDestroyFence(device_, done_fence_, nullptr);
@@ -605,6 +607,243 @@ int YuvToRgba::convert_nv12(VkImage         dst,
         vkDestroyImageView(device_, last_dst_view_, nullptr);
     }
     last_dst_view_ = dst_view;
+    return sync_fd;
+}
+
+int YuvToRgba::convert_av_vk_frame(const VkFrameImports& im,
+                                   VkImage      dst,
+                                   uint32_t     dst_w,
+                                   uint32_t     dst_h,
+                                   std::string* err) {
+    if (dst == VK_NULL_HANDLE) { fail(err, "convert_av_vk_frame: dst null"); return -1; }
+    if (im.y_image == VK_NULL_HANDLE || im.uv_image == VK_NULL_HANDLE) {
+        fail(err, "convert_av_vk_frame: AVVkFrame missing Y or UV plane "
+                  "(DISABLE_MULTIPLANE not honoured?)");
+        return -1;
+    }
+    if ((dst_w & 1u) || (dst_h & 1u)) {
+        fail(err, "convert_av_vk_frame: dst dims must be even");
+        return -1;
+    }
+    if (dst_w > max_w_ || dst_h > max_h_) {
+        fail(err, "convert_av_vk_frame: dst exceeds configured max extent");
+        return -1;
+    }
+
+    /* Wait for prior submit before reusing cmd_/dset_ — same protection
+     * as convert_nv12; the in-flight last_*_view_ destruction below also
+     * relies on this. */
+    if (fence_pending_) {
+        if (VkResult r = vkWaitForFences(device_, 1, &done_fence_, VK_TRUE,
+                                         1'000'000'000ull);
+            r != VK_SUCCESS) {
+            fail(err, std::string("vkWaitForFences: ") + vk_result_str(r));
+            return -1;
+        }
+        if (VkResult r = vkResetFences(device_, 1, &done_fence_); r != VK_SUCCESS) {
+            fail(err, std::string("vkResetFences: ") + vk_result_str(r));
+            return -1;
+        }
+        fence_pending_ = false;
+    }
+
+    /* Build per-call image views aliasing the AVVkFrame planes + dst. */
+    VkImageView dst_view = VK_NULL_HANDLE;
+    VkImageView y_view   = VK_NULL_HANDLE;
+    VkImageView uv_view  = VK_NULL_HANDLE;
+
+    auto cleanup_views = [&]() {
+        if (dst_view) vkDestroyImageView(device_, dst_view, nullptr);
+        if (y_view)   vkDestroyImageView(device_, y_view,   nullptr);
+        if (uv_view)  vkDestroyImageView(device_, uv_view,  nullptr);
+    };
+
+    {
+        VkImageViewCreateInfo vci {};
+        vci.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vci.components       = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+
+        vci.image  = im.y_image;
+        vci.format = VK_FORMAT_R8_UNORM;
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &y_view);
+            r != VK_SUCCESS) {
+            fail(err, std::string("vkCreateImageView(Y, AVVkFrame): ") + vk_result_str(r));
+            cleanup_views(); return -1;
+        }
+        vci.image  = im.uv_image;
+        vci.format = VK_FORMAT_R8G8_UNORM;
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &uv_view);
+            r != VK_SUCCESS) {
+            fail(err, std::string("vkCreateImageView(UV, AVVkFrame): ") + vk_result_str(r));
+            cleanup_views(); return -1;
+        }
+        vci.image  = dst;
+        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        if (VkResult r = vkCreateImageView(device_, &vci, nullptr, &dst_view);
+            r != VK_SUCCESS) {
+            fail(err, std::string("vkCreateImageView(dst, AVVkFrame): ") + vk_result_str(r));
+            cleanup_views(); return -1;
+        }
+    }
+
+    /* Re-bind all three descriptor slots: Y/UV now alias FFmpeg's
+     * images, dst is a fresh slot. */
+    {
+        VkDescriptorImageInfo dii_y  { sampler_, y_view,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo dii_uv { sampler_, uv_view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo dii_d  { VK_NULL_HANDLE, dst_view, VK_IMAGE_LAYOUT_GENERAL };
+        VkWriteDescriptorSet ws[3] {};
+        for (int i = 0; i < 3; ++i) {
+            ws[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            ws[i].dstSet          = dset_;
+            ws[i].dstBinding      = static_cast<uint32_t>(i);
+            ws[i].descriptorCount = 1;
+        }
+        ws[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ws[0].pImageInfo     = &dii_y;
+        ws[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ws[1].pImageInfo     = &dii_uv;
+        ws[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        ws[2].pImageInfo     = &dii_d;
+        vkUpdateDescriptorSets(device_, 3, ws, 0, nullptr);
+    }
+
+    if (VkResult r = vkResetCommandBuffer(cmd_, 0); r != VK_SUCCESS) {
+        fail(err, std::string("vkResetCommandBuffer: ") + vk_result_str(r));
+        cleanup_views(); return -1;
+    }
+    VkCommandBufferBeginInfo bi {};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (VkResult r = vkBeginCommandBuffer(cmd_, &bi); r != VK_SUCCESS) {
+        fail(err, std::string("vkBeginCommandBuffer: ") + vk_result_str(r));
+        cleanup_views(); return -1;
+    }
+
+    /* Acquire Y/UV from FFmpeg's queue family → ours, transition to
+     * SHADER_READ_ONLY. */
+    const uint32_t y_src_qf  = *im.y_qf_in_out;
+    const uint32_t uv_src_qf = *im.uv_qf_in_out;
+    barrier_image(cmd_, im.y_image,
+                  0, VK_ACCESS_SHADER_READ_BIT,
+                  *im.y_layout_in_out, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  y_src_qf, queue_family_);
+    barrier_image(cmd_, im.uv_image,
+                  0, VK_ACCESS_SHADER_READ_BIT,
+                  *im.uv_layout_in_out, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  uv_src_qf, queue_family_);
+
+    /* dst: UNDEFINED → GENERAL. */
+    barrier_image(cmd_, dst, 0, VK_ACCESS_SHADER_WRITE_BIT,
+                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
+    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipeline_layout_, 0, 1, &dset_, 0, nullptr);
+    uint32_t pc[2] = { dst_w, dst_h };
+    vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(pc), pc);
+    const uint32_t gx = (dst_w + 7) / 8;
+    const uint32_t gy = (dst_h + 7) / 8;
+    vkCmdDispatch(cmd_, gx, gy, 1);
+
+    /* Release Y/UV back to FFmpeg's queue family in GENERAL layout
+     * (FFmpeg's decoder expects that on the next decode submit), and
+     * release dst to FOREIGN for the bridge consumer. */
+    barrier_image(cmd_, im.y_image,
+                  VK_ACCESS_SHADER_READ_BIT, 0,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                  queue_family_, y_src_qf);
+    barrier_image(cmd_, im.uv_image,
+                  VK_ACCESS_SHADER_READ_BIT, 0,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                  queue_family_, uv_src_qf);
+    barrier_image(cmd_, dst,
+                  VK_ACCESS_SHADER_WRITE_BIT, 0,
+                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                  queue_family_, VK_QUEUE_FAMILY_FOREIGN_EXT);
+
+    if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
+        fail(err, std::string("vkEndCommandBuffer: ") + vk_result_str(r));
+        cleanup_views(); return -1;
+    }
+
+    /* Wait on AVVkFrame's timeline semaphores at their current values,
+     * signal incremented values back. Plus our binary signal_sem_ for
+     * the bridge SYNC_FD export. */
+    const uint64_t y_wait_val   = *im.y_sem_val_in_out;
+    const uint64_t uv_wait_val  = *im.uv_sem_val_in_out;
+    const uint64_t y_signal_val  = y_wait_val  + 1;
+    const uint64_t uv_signal_val = uv_wait_val + 1;
+
+    VkSemaphore wait_sems[2]  = { im.y_sem, im.uv_sem };
+    uint64_t    wait_vals[2]  = { y_wait_val, uv_wait_val };
+    VkPipelineStageFlags wait_stages[2] = {
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    };
+    /* Signal: timelines + binary (binary value is ignored; we set 0). */
+    VkSemaphore signal_sems[3] = { im.y_sem, im.uv_sem, signal_sem_ };
+    uint64_t    signal_vals[3] = { y_signal_val, uv_signal_val, 0 };
+
+    VkTimelineSemaphoreSubmitInfo tsi {};
+    tsi.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    tsi.waitSemaphoreValueCount   = 2;
+    tsi.pWaitSemaphoreValues      = wait_vals;
+    tsi.signalSemaphoreValueCount = 3;
+    tsi.pSignalSemaphoreValues    = signal_vals;
+
+    VkSubmitInfo si {};
+    si.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.pNext                = &tsi;
+    si.waitSemaphoreCount   = 2;
+    si.pWaitSemaphores      = wait_sems;
+    si.pWaitDstStageMask    = wait_stages;
+    si.commandBufferCount   = 1;
+    si.pCommandBuffers      = &cmd_;
+    si.signalSemaphoreCount = 3;
+    si.pSignalSemaphores    = signal_sems;
+    if (VkResult r = vkQueueSubmit(queue_, 1, &si, done_fence_); r != VK_SUCCESS) {
+        fail(err, std::string("vkQueueSubmit: ") + vk_result_str(r));
+        cleanup_views(); return -1;
+    }
+    fence_pending_ = true;
+
+    /* Update the AVVkFrame's tracked state — caller's contract. */
+    *im.y_sem_val_in_out  = y_signal_val;
+    *im.uv_sem_val_in_out = uv_signal_val;
+    *im.y_layout_in_out   = VK_IMAGE_LAYOUT_GENERAL;
+    *im.uv_layout_in_out  = VK_IMAGE_LAYOUT_GENERAL;
+    *im.y_qf_in_out       = y_src_qf;   /* released back to FFmpeg's family */
+    *im.uv_qf_in_out      = uv_src_qf;
+
+    /* Export sync_fd for the bridge. */
+    VkSemaphoreGetFdInfoKHR sgfi {};
+    sgfi.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+    sgfi.semaphore  = signal_sem_;
+    sgfi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+    int sync_fd = -1;
+    if (VkResult r = vkGetSemaphoreFdKHR_(device_, &sgfi, &sync_fd); r != VK_SUCCESS) {
+        fail(err, std::string("vkGetSemaphoreFdKHR: ") + vk_result_str(r));
+        cleanup_views(); return -1;
+    }
+
+    /* Cycle the per-call views into the deferred destroy slots. */
+    if (last_dst_view_) vkDestroyImageView(device_, last_dst_view_, nullptr);
+    if (last_y_view_)   vkDestroyImageView(device_, last_y_view_,   nullptr);
+    if (last_uv_view_)  vkDestroyImageView(device_, last_uv_view_,  nullptr);
+    last_dst_view_ = dst_view;
+    last_y_view_   = y_view;
+    last_uv_view_  = uv_view;
     return sync_fd;
 }
 

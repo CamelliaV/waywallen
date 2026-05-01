@@ -245,18 +245,21 @@ int main(int argc, char** argv) {
     uint32_t even_w = opt.width  + (opt.width  & 1u);
     uint32_t even_h = opt.height + (opt.height & 1u);
 
-    /* --- Decoder (NV12 out) --- */
-    waywallen::ffvk::DecodeError derr;
-    auto decoder = waywallen::ffvk::VideoDecoder::open(
-        opt.video_path, even_w, even_h, opt.loop_file, &derr);
-    if (!decoder) die("decode " + opt.video_path + ": " + derr.message);
-    host.loop_value.store(opt.loop_file, std::memory_order_release);
-
-    /* --- Vulkan device + GPU YUV→RGB pipeline --- */
+    /* --- Vulkan device first, so the decoder can share it --- */
     std::string verr;
     auto producer = waywallen::ffvk::Producer::create_with_render_node(
         even_w, even_h, opt.render_node, &verr);
     if (!producer) die("vk producer: " + verr);
+
+    /* --- Decoder: prefer the shared-VkDevice path that yields AVVkFrames
+     *   directly (zero host bounce). On any setup failure the open helper
+     *   falls back internally to FFmpeg-managed hwdevice + transfer_data,
+     *   which still works through the sw `next_frame` path. */
+    waywallen::ffvk::DecodeError derr;
+    auto decoder = waywallen::ffvk::VideoDecoder::open_with_vk(
+        opt.video_path, even_w, even_h, opt.loop_file, *producer, &derr);
+    if (!decoder) die("decode " + opt.video_path + ": " + derr.message);
+    host.loop_value.store(opt.loop_file, std::memory_order_release);
 
     ww_bridge_vk_dt_t vdt {};
     ww_bridge_vk_dt_load(&vdt, vkGetInstanceProcAddr, producer->instance());
@@ -331,10 +334,16 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::fprintf(stderr,
+                 "waywallen-video-renderer: decoder mode = %s\n",
+                 decoder->using_vk_frames() ? "shared-VkDevice (zero-copy)"
+                                            : "sw → CPU NV12 → GPU upload");
+
     /* --- Main loop ----------------------------------------------------- */
     uint32_t  slot = 0;
     waywallen::ffvk::Presenter presenter;  // Iter 3: PTS-driven pacing.
     waywallen::ffvk::Nv12Frame frame;
+    waywallen::ffvk::VkFrameView vkv {};
 
     while (!host.shutdown.load(std::memory_order_acquire)) {
         {
@@ -370,7 +379,10 @@ int main(int argc, char** argv) {
         }
 
         waywallen::ffvk::DecodeError de;
-        waywallen::ffvk::FrameStatus fs = decoder->next_frame(frame, &de);
+        double frame_pts = -1.0;
+        waywallen::ffvk::FrameStatus fs = decoder->using_vk_frames()
+            ? decoder->next_vk_frame(vkv, &de)
+            : decoder->next_frame(frame, &de);
         if (fs == waywallen::ffvk::FrameStatus::error) {
             std::fprintf(stderr,
                          "waywallen-video-renderer: decode error: %s\n",
@@ -389,9 +401,10 @@ int main(int argc, char** argv) {
             });
             continue;
         }
+        frame_pts = decoder->using_vk_frames() ? vkv.pts_seconds : frame.pts_seconds;
 
         // PTS pacing: sleep until this frame is due. Drop if too late.
-        if (!presenter.present_frame(frame.pts_seconds)) continue;
+        if (!presenter.present_frame(frame_pts)) continue;
 
         if (int rc = ww_bridge_pool_wait_slot_release(host.pool, slot, 250);
             rc != 0 && rc != -ETIME) {
@@ -417,13 +430,36 @@ int main(int argc, char** argv) {
         }
 
         std::string yerr;
-        int sync_fd = yuv->convert_nv12(
-            reinterpret_cast<VkImage>(s.vk_image),
-            s.width, s.height,
-            frame.data.data(), frame.data.size(), &yerr);
+        int sync_fd = -1;
+        if (decoder->using_vk_frames()) {
+            waywallen::ffvk::YuvToRgba::VkFrameImports im {};
+            im.y_image          = vkv.img[0];
+            im.uv_image         = vkv.plane_count > 1 ? vkv.img[1] : VK_NULL_HANDLE;
+            im.y_sem            = vkv.sem[0];
+            im.uv_sem           = vkv.plane_count > 1 ? vkv.sem[1] : vkv.sem[0];
+            im.y_sem_val_in_out  = &vkv.sem_value[0];
+            im.uv_sem_val_in_out = vkv.plane_count > 1 ? &vkv.sem_value[1]
+                                                       : &vkv.sem_value[0];
+            im.y_layout_in_out   = &vkv.layout[0];
+            im.uv_layout_in_out  = vkv.plane_count > 1 ? &vkv.layout[1]
+                                                       : &vkv.layout[0];
+            im.y_qf_in_out       = &vkv.queue_family[0];
+            im.uv_qf_in_out      = vkv.plane_count > 1 ? &vkv.queue_family[1]
+                                                       : &vkv.queue_family[0];
+            im.src_w            = vkv.width;
+            im.src_h            = vkv.height;
+            sync_fd = yuv->convert_av_vk_frame(
+                im, reinterpret_cast<VkImage>(s.vk_image),
+                s.width, s.height, &yerr);
+        } else {
+            sync_fd = yuv->convert_nv12(
+                reinterpret_cast<VkImage>(s.vk_image),
+                s.width, s.height,
+                frame.data.data(), frame.data.size(), &yerr);
+        }
         if (sync_fd < 0) {
             std::fprintf(stderr,
-                         "waywallen-video-renderer: yuv->convert_nv12 failed: %s\n",
+                         "waywallen-video-renderer: yuv conversion failed: %s\n",
                          yerr.c_str());
             signal_shutdown(host);
             break;
