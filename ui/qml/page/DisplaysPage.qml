@@ -325,34 +325,77 @@ MD.Page {
                 }
 
                 RowLayout {
+                    id: connectedRendererRow
                     readonly property string connectedId: {
                         if (!root.selected) return "";
                         const links = root.selected.links || [];
                         return links.length > 0 ? (links[0].rendererId || "") : "";
                     }
+                    // Re-resolve when the manager's renderer list changes
+                    // (the `renderers` access wires up the dependency) so a
+                    // late RendererUpsert or a RendererRemoved is reflected
+                    // without manual refresh.
+                    readonly property var renderer: {
+                        const _ = W.App.rendererManager.renderers;
+                        return connectedId.length > 0
+                            ? W.App.rendererManager.get(connectedId)
+                            : null;
+                    }
                     Layout.fillWidth: true
                     spacing: 8
 
                     MD.Icon {
-                        name: parent.connectedId.length > 0
-                            ? MD.Token.icon.play_arrow
-                            : MD.Token.icon.pause
-                        size: 18
-                        color: parent.connectedId.length > 0
-                            ? MD.Token.color.primary
-                            : MD.Token.color.on_surface_variant
+                        readonly property string status: connectedRendererRow.renderer
+                            ? connectedRendererRow.renderer.status : ""
+                        name: {
+                            if (!connectedRendererRow.renderer) return MD.Token.icon.pause;
+                            return status === "paused"
+                                ? MD.Token.icon.pause
+                                : MD.Token.icon.play_arrow;
+                        }
+                        size: 24
+                        color: !connectedRendererRow.renderer || status === "paused"
+                            ? MD.Token.color.on_surface_variant
+                            : MD.Token.color.primary
                     }
-                    MD.Text {
+
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        text: parent.connectedId.length > 0
-                            ? parent.connectedId
-                            : "Idle — no renderer connected."
-                        typescale: MD.Token.typescale.body_small
-                        color: parent.connectedId.length > 0
-                            ? MD.Token.color.on_surface
-                            : MD.Token.color.on_surface_variant
-                        font.family: parent.connectedId.length > 0 ? "monospace" : ""
-                        elide: Text.ElideMiddle
+                        spacing: 0
+
+                        MD.Text {
+                            Layout.fillWidth: true
+                            text: {
+                                const r = connectedRendererRow.renderer;
+                                if (r) {
+                                    const name = (r.name && r.name.length) ? r.name : "renderer";
+                                    return r.pid > 0 ? (name + "-" + r.pid) : name;
+                                }
+                                if (connectedRendererRow.connectedId.length > 0) {
+                                    return connectedRendererRow.connectedId;
+                                }
+                                return "Idle — no renderer connected.";
+                            }
+                            typescale: MD.Token.typescale.body_medium
+                            color: connectedRendererRow.renderer
+                                ? MD.Token.color.on_surface
+                                : MD.Token.color.on_surface_variant
+                            font.family: connectedRendererRow.renderer ? "monospace" : ""
+                            elide: Text.ElideMiddle
+                        }
+
+                        MD.Text {
+                            Layout.fillWidth: true
+                            visible: !!connectedRendererRow.renderer
+                            text: {
+                                const r = connectedRendererRow.renderer;
+                                if (!r) return "";
+                                return (r.status || "") + " · " + (r.fps || 0) + " fps";
+                            }
+                            typescale: MD.Token.typescale.label_small
+                            color: MD.Token.color.on_surface_variant
+                            elide: Text.ElideRight
+                        }
                     }
                 }
 
