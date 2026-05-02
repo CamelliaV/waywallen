@@ -20,6 +20,7 @@ use crate::model::repo;
 use crate::playlist;
 use crate::renderer_manager;
 use crate::routing::{DisplaySnapshot, LibrarySnapshot, RendererSnapshot, RouterEvent};
+use crate::settings::SettingsStore;
 use crate::tasks;
 use crate::AppState;
 
@@ -71,7 +72,7 @@ async fn handle_conn(
     let mut task_rx = state.tasks.subscribe();
     {
         let snap = state.router.snapshot_displays().await;
-        let evt = displays_replace_event(snap);
+        let evt = displays_replace_event(snap, &state.settings);
         sink.send(Message::Binary(wrap_event(evt).encode_to_vec())).await?;
     }
     {
@@ -152,13 +153,13 @@ async fn handle_conn(
             evt = events_rx.recv() => {
                 match evt {
                     Ok(e) => {
-                        let pe = router_event_to_pb(e);
+                        let pe = router_event_to_pb(e, &state.settings);
                         sink.send(Message::Binary(wrap_event(pe).encode_to_vec())).await?;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         log::warn!("ws {peer}: event lag {n}; resending full snapshot");
                         let snap = state.router.snapshot_displays().await;
-                        let evt = displays_replace_event(snap);
+                        let evt = displays_replace_event(snap, &state.settings);
                         sink.send(Message::Binary(wrap_event(evt).encode_to_vec())).await?;
                         let rsnap = state.router.snapshot_renderers().await;
                         let revt = renderers_replace_event(rsnap);
@@ -204,7 +205,9 @@ async fn handle_conn(
 // RouterEvent → pb::Event translation
 // ---------------------------------------------------------------------------
 
-fn display_snapshot_to_pb(s: DisplaySnapshot) -> pb::DisplayInfo {
+fn display_snapshot_to_pb(s: DisplaySnapshot, settings: &SettingsStore) -> pb::DisplayInfo {
+    let resolved = settings.resolved_layout(&s.name);
+    let override_prefs = settings.display_prefs(&s.name).unwrap_or_default();
     pb::DisplayInfo {
         display_id: s.id,
         name: s.name,
@@ -219,13 +222,103 @@ fn display_snapshot_to_pb(s: DisplaySnapshot) -> pb::DisplayInfo {
                 z_order: l.z_order,
             })
             .collect(),
+        effective_layout: Some(layout_prefs_to_pb_resolved(&resolved)),
+        layout_override: Some(layout_override_to_pb(&override_prefs)),
     }
 }
 
-fn displays_replace_event(snap: Vec<DisplaySnapshot>) -> pb::Event {
+fn layout_prefs_to_pb_resolved(r: &crate::settings::ResolvedLayout) -> pb::LayoutPrefs {
+    pb::LayoutPrefs {
+        fillmode: fillmode_to_pb(r.fillmode) as i32,
+        align: align_to_pb(r.align) as i32,
+        clear_rgba: r.clear_rgba.to_vec(),
+    }
+}
+
+fn layout_override_to_pb(p: &crate::settings::DisplayPrefs) -> pb::LayoutOverride {
+    pb::LayoutOverride {
+        fillmode_set: p.fillmode.is_some(),
+        fillmode: p.fillmode.map(fillmode_to_pb).unwrap_or(pb::FillMode::Unspecified) as i32,
+        align_set: p.align.is_some(),
+        align: p.align.map(align_to_pb).unwrap_or(pb::Align::Unspecified) as i32,
+        clear_rgba_set: p.clear_rgba.is_some(),
+        clear_rgba: p.clear_rgba.map(|v| v.to_vec()).unwrap_or_default(),
+    }
+}
+
+fn fillmode_to_pb(fm: crate::display_layout::FillMode) -> pb::FillMode {
+    use crate::display_layout::FillMode as F;
+    match fm {
+        F::Stretched => pb::FillMode::Stretched,
+        F::PreserveAspectFit => pb::FillMode::PreserveAspectFit,
+        F::PreserveAspectCrop => pb::FillMode::PreserveAspectCrop,
+        F::Tiled => pb::FillMode::Tiled,
+        F::TiledOnlyHorizontally => pb::FillMode::TiledOnlyHorizontal,
+        F::TiledOnlyVertically => pb::FillMode::TiledOnlyVertical,
+        F::Centered => pb::FillMode::Centered,
+    }
+}
+
+fn fillmode_from_pb(v: i32) -> Option<crate::display_layout::FillMode> {
+    use crate::display_layout::FillMode as F;
+    match pb::FillMode::try_from(v).ok()? {
+        pb::FillMode::Unspecified => None,
+        pb::FillMode::Stretched => Some(F::Stretched),
+        pb::FillMode::PreserveAspectFit => Some(F::PreserveAspectFit),
+        pb::FillMode::PreserveAspectCrop => Some(F::PreserveAspectCrop),
+        pb::FillMode::Tiled => Some(F::Tiled),
+        pb::FillMode::TiledOnlyHorizontal => Some(F::TiledOnlyHorizontally),
+        pb::FillMode::TiledOnlyVertical => Some(F::TiledOnlyVertically),
+        pb::FillMode::Centered => Some(F::Centered),
+    }
+}
+
+fn align_to_pb(a: crate::display_layout::Align) -> pb::Align {
+    use crate::display_layout::Align as A;
+    match a {
+        A::TopLeft => pb::Align::TopLeft,
+        A::Top => pb::Align::Top,
+        A::TopRight => pb::Align::TopRight,
+        A::Left => pb::Align::Left,
+        A::Center => pb::Align::Center,
+        A::Right => pb::Align::Right,
+        A::BottomLeft => pb::Align::BottomLeft,
+        A::Bottom => pb::Align::Bottom,
+        A::BottomRight => pb::Align::BottomRight,
+    }
+}
+
+fn align_from_pb(v: i32) -> Option<crate::display_layout::Align> {
+    use crate::display_layout::Align as A;
+    match pb::Align::try_from(v).ok()? {
+        pb::Align::Unspecified => None,
+        pb::Align::TopLeft => Some(A::TopLeft),
+        pb::Align::Top => Some(A::Top),
+        pb::Align::TopRight => Some(A::TopRight),
+        pb::Align::Left => Some(A::Left),
+        pb::Align::Center => Some(A::Center),
+        pb::Align::Right => Some(A::Right),
+        pb::Align::BottomLeft => Some(A::BottomLeft),
+        pb::Align::Bottom => Some(A::Bottom),
+        pb::Align::BottomRight => Some(A::BottomRight),
+    }
+}
+
+fn clear_rgba_from_pb(v: &[f32]) -> Option<[f32; 4]> {
+    if v.len() == 4 {
+        Some([v[0], v[1], v[2], v[3]])
+    } else {
+        None
+    }
+}
+
+fn displays_replace_event(snap: Vec<DisplaySnapshot>, settings: &SettingsStore) -> pb::Event {
     pb::Event {
         payload: Some(pb::event::Payload::DisplaySnapshot(pb::DisplaySnapshot {
-            displays: snap.into_iter().map(display_snapshot_to_pb).collect(),
+            displays: snap
+                .into_iter()
+                .map(|s| display_snapshot_to_pb(s, settings))
+                .collect(),
         })),
     }
 }
@@ -264,11 +357,11 @@ fn libraries_replace_event(snap: Vec<LibrarySnapshot>) -> pb::Event {
     }
 }
 
-fn router_event_to_pb(e: RouterEvent) -> pb::Event {
+fn router_event_to_pb(e: RouterEvent, settings: &SettingsStore) -> pb::Event {
     match e {
         RouterEvent::DisplayUpsert(s) => pb::Event {
             payload: Some(pb::event::Payload::DisplayChanged(pb::DisplayChanged {
-                display: Some(display_snapshot_to_pb(s)),
+                display: Some(display_snapshot_to_pb(s, settings)),
             })),
         },
         RouterEvent::DisplayRemoved(id) => pb::Event {
@@ -276,7 +369,7 @@ fn router_event_to_pb(e: RouterEvent) -> pb::Event {
                 display_id: id,
             })),
         },
-        RouterEvent::DisplaysReplace(list) => displays_replace_event(list),
+        RouterEvent::DisplaysReplace(list) => displays_replace_event(list, settings),
         RouterEvent::RendererUpsert(s) => pb::Event {
             payload: Some(pb::event::Payload::RendererChanged(pb::RendererChanged {
                 renderer: Some(renderer_snapshot_to_pb(s)),
@@ -598,23 +691,58 @@ async fn dispatch(state: &Arc<AppState>, req: pb::Request) -> pb::Response {
             let snap = state.router.snapshot_displays().await;
             let displays = snap
                 .into_iter()
-                .map(|d| pb::DisplayInfo {
-                    display_id: d.id,
-                    name: d.name,
-                    width: d.width,
-                    height: d.height,
-                    refresh_mhz: d.refresh_mhz,
-                    links: d
-                        .links
-                        .into_iter()
-                        .map(|l| pb::DisplayLinkInfo {
-                            renderer_id: l.renderer_id,
-                            z_order: l.z_order,
-                        })
-                        .collect(),
-                })
+                .map(|d| display_snapshot_to_pb(d, &state.settings))
                 .collect();
             ok(rid, Res::DisplayList(pb::DisplayListResponse { displays }))
+        }
+
+        Req::DisplayLayoutSet(r) => {
+            let new_fillmode = if r.clear_fillmode {
+                None
+            } else {
+                r.r#override
+                    .as_ref()
+                    .filter(|o| o.fillmode_set)
+                    .and_then(|o| fillmode_from_pb(o.fillmode))
+            };
+            let new_align = if r.clear_align {
+                None
+            } else {
+                r.r#override
+                    .as_ref()
+                    .filter(|o| o.align_set)
+                    .and_then(|o| align_from_pb(o.align))
+            };
+            let new_clear_rgba = if r.clear_clear_rgba {
+                None
+            } else {
+                r.r#override
+                    .as_ref()
+                    .filter(|o| o.clear_rgba_set)
+                    .and_then(|o| clear_rgba_from_pb(&o.clear_rgba))
+            };
+            state
+                .router
+                .set_display_layout(
+                    r.name.clone(),
+                    new_fillmode,
+                    new_align,
+                    new_clear_rgba,
+                    r.clear_fillmode,
+                    r.clear_align,
+                    r.clear_clear_rgba,
+                )
+                .await;
+            // Look up the (possibly absent) DisplayInfo to return.
+            let snap = state.router.snapshot_displays().await;
+            let display = snap
+                .into_iter()
+                .find(|d| d.name == r.name)
+                .map(|d| display_snapshot_to_pb(d, &state.settings));
+            ok(
+                rid,
+                Res::DisplayLayoutSet(pb::DisplayLayoutSetResponse { display }),
+            )
         }
 
         Req::WallpaperApply(r) => {
@@ -794,12 +922,18 @@ async fn dispatch(state: &Arc<AppState>, req: pb::Request) -> pb::Response {
 
         Req::SettingsGet(_) => {
             let snap = state.settings.snapshot();
+            let layout_defaults = pb::LayoutPrefs {
+                fillmode: fillmode_to_pb(snap.global.layout.fillmode) as i32,
+                align: align_to_pb(snap.global.layout.align) as i32,
+                clear_rgba: snap.global.layout.clear_rgba.to_vec(),
+            };
             ok(
                 rid,
                 Res::SettingsGet(pb::SettingsGetResponse {
                     global: Some(pb::GlobalSettings {
                         default_width: snap.global.default_width,
                         default_height: snap.global.default_height,
+                        layout_defaults: Some(layout_defaults),
                     }),
                     plugins: snap
                         .plugins
@@ -826,13 +960,37 @@ async fn dispatch(state: &Arc<AppState>, req: pb::Request) -> pb::Response {
             // against the new ones and dispatch ApplySettings to any
             // live renderer whose plugin name matches.
             let previous_plugins = state.settings.snapshot().plugins;
+            // Snapshot pre-mutation layout defaults so we know whether
+            // to re-sync display set_configs after the write.
+            let prev_layout = state.settings.snapshot().global.layout.clone();
             state.settings.update(|s| {
                 if let Some(g) = r.global.as_ref() {
                     s.global.default_width = g.default_width;
                     s.global.default_height = g.default_height;
+                    if let Some(ld) = g.layout_defaults.as_ref() {
+                        if let Some(fm) = fillmode_from_pb(ld.fillmode) {
+                            s.global.layout.fillmode = fm;
+                        }
+                        if let Some(al) = align_from_pb(ld.align) {
+                            s.global.layout.align = al;
+                        }
+                        if let Some(rgba) = clear_rgba_from_pb(&ld.clear_rgba) {
+                            s.global.layout.clear_rgba = rgba;
+                        }
+                    }
                 }
                 s.plugins = new_plugins.clone();
             });
+            let new_layout = state.settings.snapshot().global.layout.clone();
+            if new_layout != prev_layout {
+                state.router.resync_all_set_configs().await;
+                // Push fresh DisplaySnapshot so subscribers see new
+                // effective_layout values.
+                let snap = state.router.snapshot_displays().await;
+                state
+                    .router
+                    .emit_displays_replace_for_settings_change(snap);
+            }
             // Step 4: live renderer hot-reload.
             // For each plugin that actually changed, walk live
             // renderers for that plugin name and push the delta.

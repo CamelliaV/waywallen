@@ -9,6 +9,7 @@ mod control;
 mod control_proto;
 mod dbus_iface;
 mod display_endpoint;
+mod display_layout;
 mod display_proto;
 mod display_spawner;
 mod events;
@@ -253,6 +254,7 @@ async fn async_main() -> anyhow::Result<()> {
     renderer_mgr.start_reaper();
     let settings_store =
         settings::SettingsStore::load_or_default(settings::default_config_path()).await;
+    router.attach_settings(settings_store.clone());
     let db_path = settings::default_db_path();
     let db = model::connect(&db_path)
         .await

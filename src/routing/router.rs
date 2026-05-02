@@ -33,11 +33,13 @@ const IDLE_KILL_TIMEOUT: Duration = Duration::from_secs(3600);
 /// How often the backstop reaper task wakes up to scan for stragglers.
 const IDLE_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 
+use crate::display_layout::{self, FillMode, LayoutInput};
 use crate::ipc::proto::{ControlMsg, EventMsg};
 use crate::renderer_manager::{
     DrmNode, RendererHandle, RendererId, RendererManager, BUF_HOST_VISIBLE,
 };
 use crate::scheduler::{DisplayId, DisplayInfo, ProjectedConfig};
+use crate::settings::{ResolvedLayout, SettingsStore};
 
 use super::table::{Link, LinkDstRect, LinkId, LinkSrcRect, RoutingTable};
 
@@ -236,6 +238,11 @@ pub struct Router {
     /// Fan-out channel for `RouterEvent`s. Always present; `send` errors
     /// when there are no subscribers are logged at debug and ignored.
     events_tx: broadcast::Sender<RouterEvent>,
+    /// Settings store used to resolve per-display fillmode/align when
+    /// computing `set_config`. Set once at startup via
+    /// [`Router::attach_settings`]; tests omit it and fall back to
+    /// `LayoutDefaults::default()` (Stretched + Center, identity).
+    settings: std::sync::OnceLock<Arc<SettingsStore>>,
 }
 
 impl Router {
@@ -253,6 +260,7 @@ impl Router {
             }),
             mgr,
             events_tx,
+            settings: std::sync::OnceLock::new(),
         });
         // Spawn the idle-renderer reaper.
         {
@@ -266,6 +274,152 @@ impl Router {
             });
         }
         router
+    }
+
+    /// Wire the daemon's `SettingsStore` so `sync_display` can resolve
+    /// per-display fillmode/align when projecting `set_config`. Called
+    /// exactly once at boot from `main.rs`. Tests skip it and fall
+    /// back to `LayoutDefaults::default()`.
+    pub fn attach_settings(self: &Arc<Self>, settings: Arc<SettingsStore>) {
+        if self.settings.set(settings).is_err() {
+            log::warn!("router: attach_settings called twice; ignoring second call");
+        }
+    }
+
+    /// Resolve effective layout for a display name, defaulting to
+    /// identity (Stretched + Center) when settings haven't been
+    /// attached (tests, very early boot).
+    fn resolved_layout(&self, name: &str) -> ResolvedLayout {
+        match self.settings.get() {
+            Some(s) => s.resolved_layout(name),
+            None => ResolvedLayout {
+                fillmode: FillMode::default(),
+                align: Default::default(),
+                clear_rgba: [0.0, 0.0, 0.0, 1.0],
+            },
+        }
+    }
+
+    /// Set or clear per-display layout fields. `None` for a field
+    /// means "no change"; the only way to *clear* a per-display
+    /// override is via the explicit `clear_*` flags (set on the
+    /// caller side before invoking). This method is the entry point
+    /// for the `DisplayLayoutSet` control RPC. After mutating the
+    /// settings store it re-syncs the display so the consumer
+    /// receives an updated `set_config`.
+    pub async fn set_display_layout(
+        self: &Arc<Self>,
+        display_name: String,
+        new_fillmode: Option<crate::display_layout::FillMode>,
+        new_align: Option<crate::display_layout::Align>,
+        new_clear_rgba: Option<[f32; 4]>,
+        clear_fillmode: bool,
+        clear_align: bool,
+        clear_clear_rgba: bool,
+    ) {
+        let Some(settings) = self.settings.get().cloned() else {
+            log::warn!(
+                "router: set_display_layout({display_name}) called before settings attached"
+            );
+            return;
+        };
+        settings.update(|s| {
+            let entry = s.displays.entry(display_name.clone()).or_default();
+            if clear_fillmode {
+                entry.fillmode = None;
+            }
+            if let Some(v) = new_fillmode {
+                entry.fillmode = Some(v);
+            }
+            if clear_align {
+                entry.align = None;
+            }
+            if let Some(v) = new_align {
+                entry.align = Some(v);
+            }
+            if clear_clear_rgba {
+                entry.clear_rgba = None;
+            }
+            if let Some(v) = new_clear_rgba {
+                entry.clear_rgba = Some(v);
+            }
+            // Prune empty entry to keep the on-disk file tidy.
+            if entry.is_empty() {
+                s.displays.remove(&display_name);
+            }
+        });
+        let target_id = self.find_display_by_name(&display_name).await;
+        if let Some(did) = target_id {
+            self.resync_display_set_config(did).await;
+            if let Some(snap) = self.snapshot_display(did).await {
+                self.emit(RouterEvent::DisplayUpsert(snap));
+            }
+        }
+    }
+
+    /// Re-emit `set_config` for a single display to pick up new
+    /// settings. Cheaper than `sync_display` because it skips the
+    /// Bind/Unbind diff check; settings changes never alter
+    /// renderer-binding state.
+    async fn resync_display_set_config(self: &Arc<Self>, display_id: DisplayId) {
+        let mut inner = self.inner.lock().await;
+        if !inner.displays.contains_key(&display_id) {
+            return;
+        }
+        let display_links = inner.table.links_for_display(display_id);
+        let target = display_links.into_iter().find(|l| l.enabled).and_then(|l| {
+            let renderer = inner.table.get_renderer(&l.renderer_id)?;
+            let gen = renderer
+                .bind_snapshot()
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|s| s.generation))?;
+            Some((l, renderer, gen))
+        });
+        let Some((link, renderer, _gen)) = target else {
+            return;
+        };
+        inner.next_config_generation += 1;
+        let cfg_gen = inner.next_config_generation;
+        let info = inner.displays.get(&display_id).unwrap().info.clone();
+        let layout = self.resolved_layout(&info.name);
+        let cfg = project_link(&link, &renderer, &info, cfg_gen, &layout);
+        if let Some(state) = inner.displays.get(&display_id) {
+            let _ = state.tx.send(DisplayOutEvent::SetConfig(cfg));
+        }
+    }
+
+    async fn find_display_by_name(self: &Arc<Self>, name: &str) -> Option<DisplayId> {
+        let inner = self.inner.lock().await;
+        inner
+            .displays
+            .iter()
+            .find(|(_, s)| s.info.name == name)
+            .map(|(id, _)| *id)
+    }
+
+    /// Re-emit `set_config` for every registered display. Called from
+    /// the control surface after a global `SettingsSet` so per-display
+    /// overrides plus the new global defaults propagate uniformly.
+    pub async fn resync_all_set_configs(self: &Arc<Self>) {
+        let ids: Vec<DisplayId> = {
+            let inner = self.inner.lock().await;
+            inner.displays.keys().copied().collect()
+        };
+        for did in ids {
+            self.resync_display_set_config(did).await;
+        }
+    }
+
+    /// Push a DisplaysReplace router event after a settings-only
+    /// change so subscribed UIs refresh `effective_layout` /
+    /// `layout_override` for every display. The argument is a
+    /// pre-fetched snapshot to avoid a redundant lock round-trip.
+    pub fn emit_displays_replace_for_settings_change(
+        self: &Arc<Self>,
+        snap: Vec<DisplaySnapshot>,
+    ) {
+        self.emit(RouterEvent::DisplaysReplace(snap));
     }
 
     /// Kill renderers that have been paused longer than
@@ -834,7 +988,8 @@ impl Router {
             }
             inner.next_config_generation += 1;
             let cfg_gen = inner.next_config_generation;
-            let cfg = project_link(&link, &renderer, &info, cfg_gen);
+            let layout = self.resolved_layout(&info.name);
+            let cfg = project_link(&link, &renderer, &info, cfg_gen, &layout);
             Some((link.display_id, cfg))
         };
         let affected_display = payload.as_ref().map(|(d, _)| *d);
@@ -1199,7 +1354,8 @@ impl Router {
         if let Some((link, renderer, new_g)) = target {
             inner.next_config_generation += 1;
             let cfg_gen = inner.next_config_generation;
-            let cfg = project_link(&link, &renderer, &info, cfg_gen);
+            let layout = self.resolved_layout(&info.name);
+            let cfg = project_link(&link, &renderer, &info, cfg_gen, &layout);
             let new_r = link.renderer_id.clone();
             let s = inner.displays.get_mut(&display_id).unwrap();
             let _ = s.tx.send(DisplayOutEvent::Bind {
@@ -1216,15 +1372,62 @@ impl Router {
     }
 }
 
-/// Resolve a `Link`'s geometry into a wire-ready `ProjectedConfig`,
-/// substituting the renderer's full texture / display's full surface
-/// for the `FULL_SRC` / `FULL_DST` sentinels.
+/// Resolve a `Link`'s geometry into a wire-ready `ProjectedConfig`.
+///
+/// Two paths:
+///
+/// 1. If both rects are the `FULL_SRC`/`FULL_DST` sentinels (the
+///    common case — Phase 1 auto-link, no explicit per-link geometry),
+///    delegate to `display_layout::compute()` so the user-configured
+///    fillmode/align takes effect.
+/// 2. If either rect is explicit, that explicit geometry wins for
+///    all four fields (preserves the future per-link composition
+///    use case where geometry is set deliberately and shouldn't be
+///    overridden by per-display preferences).
+///
+/// The `link.clear_rgba` always wins over the resolved layout's
+/// clear color when the link sets a non-default value — but right
+/// now `add_link` always seeds [0,0,0,1] and there's no API to
+/// change it per-link, so in practice the layout's clear color is
+/// what the user sees.
 fn project_link(
     link: &Link,
     renderer: &Arc<RendererHandle>,
     info: &DisplayInfo,
     config_generation: u64,
+    layout: &ResolvedLayout,
 ) -> ProjectedConfig {
+    let src_full = link.src_rect == super::table::FULL_SRC;
+    let dst_full = link.dst_rect == super::table::FULL_DST;
+
+    if src_full && dst_full {
+        let out = display_layout::compute(LayoutInput {
+            tex_w: renderer.width as f32,
+            tex_h: renderer.height as f32,
+            disp_w: info.width as f32,
+            disp_h: info.height as f32,
+            fillmode: layout.fillmode,
+            align: layout.align,
+            clear_rgba: layout.clear_rgba,
+        });
+        return ProjectedConfig {
+            config_generation,
+            source_x: out.source.0,
+            source_y: out.source.1,
+            source_w: out.source.2,
+            source_h: out.source.3,
+            dest_x: out.dest.0,
+            dest_y: out.dest.1,
+            dest_w: out.dest.2,
+            dest_h: out.dest.3,
+            transform: link.transform,
+            clear_rgba: out.clear_rgba,
+        };
+    }
+
+    // Explicit per-link geometry: keep the legacy resolve-sentinels
+    // path. Falls through here when an integration test or future
+    // multi-link composition has set explicit rects on the Link.
     let resolve_src = |r: LinkSrcRect| -> (f32, f32, f32, f32) {
         let w = if r.w.is_infinite() { renderer.width as f32 } else { r.w };
         let h = if r.h.is_infinite() { renderer.height as f32 } else { r.h };
@@ -1687,5 +1890,100 @@ mod tests {
             N::DRM_FORMAT_MOD_LINEAR,
             "after consumer blacklist, picker must fall back to LINEAR"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // project_link layout integration
+    // -----------------------------------------------------------------
+
+    fn make_link(rid: &str, did: DisplayId) -> Link {
+        Link {
+            id: 1,
+            renderer_id: rid.to_string(),
+            display_id: did,
+            enabled: true,
+            src_rect: super::super::table::FULL_SRC,
+            dst_rect: super::super::table::FULL_DST,
+            transform: 0,
+            clear_rgba: [0.0, 0.0, 0.0, 1.0],
+            z_order: 0,
+        }
+    }
+
+    fn make_info(name: &str, w: u32, h: u32) -> DisplayInfo {
+        DisplayInfo {
+            id: 1,
+            name: name.into(),
+            width: w,
+            height: h,
+            refresh_mhz: 60_000,
+            properties: vec![],
+            bound: true,
+        }
+    }
+
+    #[test]
+    fn project_link_stretched_default_is_identity() {
+        // 1920x1080 texture, 1280x720 display, default layout (Stretched + Center).
+        let renderer = RendererHandle::test_stub("r1", "scene"); // 1920x1080
+        let info = make_info("eDP-1", 1280, 720);
+        let link = make_link("r1", 1);
+        let layout = ResolvedLayout {
+            fillmode: FillMode::default(),
+            align: Default::default(),
+            clear_rgba: [0.0, 0.0, 0.0, 1.0],
+        };
+        let cfg = project_link(&link, &renderer, &info, 42, &layout);
+        assert_eq!(cfg.config_generation, 42);
+        assert_eq!((cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h), (0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!((cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h), (0.0, 0.0, 1280.0, 720.0));
+        assert_eq!(cfg.clear_rgba, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn project_link_aspect_fit_letterboxes_with_clear_color() {
+        // 1920x1080 texture into 1000x1000 display with PreserveAspectFit + Top:
+        // scale = min(1000/1920, 1000/1080) = 0.5208
+        // dest_w = 1000, dest_h = 562.5; dx = 0; dy = (1000-562.5)*0 = 0
+        let renderer = RendererHandle::test_stub("r1", "scene");
+        let info = make_info("DP-1", 1000, 1000);
+        let link = make_link("r1", 1);
+        let layout = ResolvedLayout {
+            fillmode: FillMode::PreserveAspectFit,
+            align: crate::display_layout::Align::Top,
+            clear_rgba: [0.2, 0.4, 0.6, 1.0],
+        };
+        let cfg = project_link(&link, &renderer, &info, 7, &layout);
+        assert!((cfg.source_w - 1920.0).abs() < 1e-3);
+        assert!((cfg.source_h - 1080.0).abs() < 1e-3);
+        assert!((cfg.dest_w - 1000.0).abs() < 1e-3);
+        assert!((cfg.dest_h - 562.5).abs() < 1e-3);
+        assert!((cfg.dest_x - 0.0).abs() < 1e-3);
+        assert!((cfg.dest_y - 0.0).abs() < 1e-3);
+        assert_eq!(cfg.clear_rgba, [0.2, 0.4, 0.6, 1.0]);
+    }
+
+    #[test]
+    fn project_link_explicit_link_geometry_skips_layout() {
+        // A link with explicit (non-sentinel) src/dst rects should
+        // bypass display_layout::compute and pass the rects through
+        // verbatim — even if the resolved layout wants something else.
+        let renderer = RendererHandle::test_stub("r1", "scene");
+        let info = make_info("eDP-1", 1280, 720);
+        let mut link = make_link("r1", 1);
+        link.src_rect = super::super::table::LinkSrcRect { x: 100.0, y: 200.0, w: 800.0, h: 600.0 };
+        link.dst_rect = super::super::table::LinkDstRect { x: 50.0, y: 75.0, w: 400.0, h: 300.0 };
+        link.clear_rgba = [1.0, 0.0, 0.0, 1.0];
+        let layout = ResolvedLayout {
+            // Even with PreserveAspectFit, explicit geometry must win.
+            fillmode: FillMode::PreserveAspectFit,
+            align: Default::default(),
+            clear_rgba: [0.0, 0.0, 1.0, 1.0],
+        };
+        let cfg = project_link(&link, &renderer, &info, 1, &layout);
+        assert_eq!((cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h), (100.0, 200.0, 800.0, 600.0));
+        assert_eq!((cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h), (50.0, 75.0, 400.0, 300.0));
+        // Explicit clear color survives.
+        assert_eq!(cfg.clear_rgba, [1.0, 0.0, 0.0, 1.0]);
     }
 }

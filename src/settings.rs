@@ -30,11 +30,60 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
+use crate::display_layout::{Align, FillMode};
+
 /// Quiet period after the last `update()` before the debounced writer
 /// flushes to disk. Short enough that `Ctrl-C` shortly after a setting
 /// change still persists if the user waits a beat; long enough that
 /// rapid-fire UI toggles batch into a single write.
 const DEBOUNCE_WRITE: Duration = Duration::from_secs(2);
+
+/// Daemon-wide layout defaults applied to displays that have no
+/// `[displays.<name>]` override.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutDefaults {
+    pub fillmode: FillMode,
+    pub align: Align,
+    /// sRGB straight alpha, 0..=1. Used as the letterbox color in fit
+    /// modes when the texture doesn't fully cover the display.
+    pub clear_rgba: [f32; 4],
+}
+
+impl Default for LayoutDefaults {
+    fn default() -> Self {
+        Self {
+            fillmode: FillMode::default(),
+            align: Align::default(),
+            clear_rgba: [0.0, 0.0, 0.0, 1.0],
+        }
+    }
+}
+
+/// Per-display override. Each field is `Option`; `None` means "inherit
+/// the global default". Keyed in `Settings::displays` by the display
+/// name advertised in `register_display`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayPrefs {
+    pub fillmode: Option<FillMode>,
+    pub align: Option<Align>,
+    pub clear_rgba: Option<[f32; 4]>,
+}
+
+impl DisplayPrefs {
+    pub fn is_empty(&self) -> bool {
+        self.fillmode.is_none() && self.align.is_none() && self.clear_rgba.is_none()
+    }
+}
+
+/// Layout values resolved against (per-display override → global → built-in defaults).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedLayout {
+    pub fillmode: FillMode,
+    pub align: Align,
+    pub clear_rgba: [f32; 4],
+}
 
 /// Daemon-wide defaults consumed by `WallpaperApply` when a renderer
 /// has no per-plugin override.
@@ -42,7 +91,7 @@ const DEBOUNCE_WRITE: Duration = Duration::from_secs(2);
 /// Note: fps is intentionally NOT here. Frame rate is a per-plugin
 /// concern (different renderer engines have different sane defaults
 /// and capabilities), so it lives in `[plugin.<name>]` tables only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlobalSettings {
     pub default_width: u32,
@@ -60,6 +109,10 @@ pub struct GlobalSettings {
     /// startup so the rotator picks the same cadence the user left
     /// the daemon in.
     pub rotation_secs: u32,
+    /// Default fillmode/align/clear color applied when a display has
+    /// no per-display override. Drives the daemon-side projection of
+    /// `set_config` rects.
+    pub layout: LayoutDefaults,
 }
 
 impl Default for GlobalSettings {
@@ -71,11 +124,12 @@ impl Default for GlobalSettings {
             active_playlist_id: None,
             playlist_mode: "sequential".to_string(),
             rotation_secs: 0,
+            layout: LayoutDefaults::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub global: GlobalSettings,
@@ -86,6 +140,12 @@ pub struct Settings {
     /// gymnastics.
     #[serde(default, rename = "plugin")]
     pub plugins: HashMap<String, HashMap<String, String>>,
+    /// Per-display layout overrides keyed by the display name
+    /// advertised in `register_display`. Empty entries are pruned by
+    /// `DisplayPrefs::is_empty`-aware writers; missing keys mean
+    /// "inherit global defaults".
+    #[serde(default, rename = "display")]
+    pub displays: HashMap<String, DisplayPrefs>,
 }
 
 /// Resolve the on-disk location. Order:
@@ -228,6 +288,44 @@ impl SettingsStore {
             .cloned()
     }
 
+    /// Resolve the effective layout for a display by name. Per-display
+    /// overrides win field-by-field; missing fields fall back to the
+    /// global `LayoutDefaults`. Hot path — called from
+    /// `Router::sync_display` on every set_config emission.
+    pub fn resolved_layout(&self, display_name: &str) -> ResolvedLayout {
+        let g = self.inner.read().expect("settings poisoned");
+        let defaults = &g.global.layout;
+        let prefs = g.displays.get(display_name);
+        ResolvedLayout {
+            fillmode: prefs.and_then(|p| p.fillmode).unwrap_or(defaults.fillmode),
+            align: prefs.and_then(|p| p.align).unwrap_or(defaults.align),
+            clear_rgba: prefs.and_then(|p| p.clear_rgba).unwrap_or(defaults.clear_rgba),
+        }
+    }
+
+    /// Snapshot just the per-display preferences (cloned). Used to
+    /// expose the override map over the control plane (e.g.
+    /// `DisplayInfo.layout_override` in protobuf).
+    pub fn display_prefs(&self, display_name: &str) -> Option<DisplayPrefs> {
+        self.inner
+            .read()
+            .expect("settings poisoned")
+            .displays
+            .get(display_name)
+            .cloned()
+    }
+
+    /// Snapshot every registered display name in the prefs map.
+    pub fn display_pref_names(&self) -> Vec<String> {
+        self.inner
+            .read()
+            .expect("settings poisoned")
+            .displays
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// Apply an in-memory mutation. Compares the post-closure state
     /// against the pre-closure clone; only flips the dirty bit and
     /// pokes the writer if the closure actually changed something.
@@ -368,6 +466,69 @@ mod tests {
         assert_eq!(s.global.default_width, 2560);
         // Unspecified fields keep their defaults.
         assert_eq!(s.global.default_height, 1080);
+    }
+
+    #[test]
+    fn layout_defaults_roundtrip() {
+        let src = r#"
+[global.layout]
+fillmode = "preserve_aspect_crop"
+align = "top_right"
+clear_rgba = [0.5, 0.0, 0.5, 1.0]
+"#;
+        let s: Settings = toml::from_str(src).unwrap();
+        assert_eq!(s.global.layout.fillmode, FillMode::PreserveAspectCrop);
+        assert_eq!(s.global.layout.align, Align::TopRight);
+        assert_eq!(s.global.layout.clear_rgba, [0.5, 0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn display_override_parses_and_resolves() {
+        let src = r#"
+[global.layout]
+fillmode = "stretched"
+align = "center"
+
+[display.HDMI-A-1]
+fillmode = "preserve_aspect_fit"
+clear_rgba = [0.0, 0.0, 1.0, 1.0]
+"#;
+        let s: Settings = toml::from_str(src).unwrap();
+        let prefs = s.displays.get("HDMI-A-1").unwrap();
+        assert_eq!(prefs.fillmode, Some(FillMode::PreserveAspectFit));
+        assert_eq!(prefs.align, None); // inherits
+        assert_eq!(prefs.clear_rgba, Some([0.0, 0.0, 1.0, 1.0]));
+    }
+
+    #[tokio::test]
+    async fn resolved_layout_falls_back_field_by_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let store = SettingsStore::load_or_default(path).await;
+
+        // No per-display entry => pure global defaults.
+        let r = store.resolved_layout("eDP-1");
+        assert_eq!(r.fillmode, FillMode::default());
+        assert_eq!(r.align, Align::default());
+
+        // Set a partial override for "eDP-1" (only fillmode).
+        store.update(|s| {
+            s.global.layout.align = Align::Bottom;
+            s.global.layout.clear_rgba = [0.1, 0.2, 0.3, 1.0];
+            s.displays.insert(
+                "eDP-1".into(),
+                DisplayPrefs {
+                    fillmode: Some(FillMode::PreserveAspectCrop),
+                    align: None,
+                    clear_rgba: None,
+                },
+            );
+        });
+
+        let r = store.resolved_layout("eDP-1");
+        assert_eq!(r.fillmode, FillMode::PreserveAspectCrop); // override
+        assert_eq!(r.align, Align::Bottom); // global
+        assert_eq!(r.clear_rgba, [0.1, 0.2, 0.3, 1.0]); // global
     }
 
     #[test]

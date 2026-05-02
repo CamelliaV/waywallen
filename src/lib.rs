@@ -1,4 +1,5 @@
 pub mod display_endpoint;
+pub mod display_layout;
 pub mod display_proto;
 pub mod events;
 pub mod ipc;
@@ -11,6 +12,7 @@ pub mod probe_task;
 pub mod renderer_manager;
 pub mod routing;
 pub mod scheduler;
+pub mod settings;
 pub mod sync;
 pub mod tasks;
 pub mod wallpaper_type;

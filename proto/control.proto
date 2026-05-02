@@ -55,6 +55,7 @@ message Request {
     PlaylistActivateRequest   playlist_activate = 37;
     PlaylistDeactivateRequest playlist_deactivate = 38;
     PlaylistStatusRequest     playlist_status = 39;
+    DisplayLayoutSetRequest   display_layout_set = 40;
   }
 }
 
@@ -93,6 +94,7 @@ message Response {
     Empty                      playlist_activate = 37;
     Empty                      playlist_deactivate = 38;
     PlaylistStatusResponse     playlist_status = 39;
+    DisplayLayoutSetResponse   display_layout_set = 40;
   }
 }
 
@@ -252,6 +254,68 @@ message DisplayLinkInfo {
   int32  z_order     = 2;
 }
 
+// Wallpaper fit policy. Values mirror Plasma's wallpaper plugin enum
+// (Stretched / PreserveAspectFit / PreserveAspectCrop / Tiled /
+// TiledOnlyHorizontally / TiledOnlyVertically / Centered) so the daemon
+// API maps 1:1 onto a future Plasma plugin. Tile* variants are
+// accepted but the daemon currently degrades them to
+// PRESERVE_ASPECT_FIT and logs a warning — the v1 set_config wire
+// can't express texture wrap in a single rect.
+enum FillMode {
+  FILL_MODE_UNSPECIFIED          = 0;
+  FILL_MODE_STRETCHED            = 1;
+  FILL_MODE_PRESERVE_ASPECT_FIT  = 2;
+  FILL_MODE_PRESERVE_ASPECT_CROP = 3;
+  FILL_MODE_TILED                = 4;
+  FILL_MODE_TILED_ONLY_HORIZONTAL = 5;
+  FILL_MODE_TILED_ONLY_VERTICAL   = 6;
+  FILL_MODE_CENTERED              = 7;
+}
+
+// 9-position alignment grid. Used by all FillMode values that don't
+// fully cover the display: positions the visible content within the
+// surface (PreserveAspectFit, Centered) or within the texture
+// (PreserveAspectCrop). Stretched ignores it.
+enum Align {
+  ALIGN_UNSPECIFIED   = 0;
+  ALIGN_TOP_LEFT      = 1;
+  ALIGN_TOP           = 2;
+  ALIGN_TOP_RIGHT     = 3;
+  ALIGN_LEFT          = 4;
+  ALIGN_CENTER        = 5;
+  ALIGN_RIGHT         = 6;
+  ALIGN_BOTTOM_LEFT   = 7;
+  ALIGN_BOTTOM        = 8;
+  ALIGN_BOTTOM_RIGHT  = 9;
+}
+
+// Resolved (or default) layout values. Used both for the global
+// default in `GlobalSettings.layout_defaults` and for the effective
+// layout broadcast back to clients on `DisplayInfo`.
+//
+// `clear_rgba` is a 4-element RGBA float array (sRGB straight alpha,
+// 0..=1). Empty array means "inherit / unset"; the daemon always
+// emits exactly 4 elements when it serializes an effective layout.
+message LayoutPrefs {
+  FillMode fillmode = 1;
+  Align    align    = 2;
+  repeated float clear_rgba = 3 [packed = true];
+}
+
+// Sparse per-display override. Each *_set flag, when true, indicates
+// that the matching field carries a real value; otherwise the field
+// is unset (= "inherit the global default"). Used on
+// `DisplayInfo.layout_override` and as the body of
+// `DisplayLayoutSetRequest`.
+message LayoutOverride {
+  bool fillmode_set = 1;
+  FillMode fillmode = 2;
+  bool align_set    = 3;
+  Align align       = 4;
+  bool clear_rgba_set = 5;
+  repeated float clear_rgba = 6 [packed = true];
+}
+
 message DisplayInfo {
   uint64 display_id  = 1;
   string name        = 2;
@@ -259,11 +323,52 @@ message DisplayInfo {
   uint32 height      = 4;
   uint32 refresh_mhz = 5;
   repeated DisplayLinkInfo links = 6;
+  // Resolved fillmode/align/clear_rgba currently in effect for this
+  // display (per-display override applied on top of the global
+  // defaults). UI binds to this for display.
+  LayoutPrefs effective_layout = 7;
+  // The raw per-display override (sparse). UI binds to this for the
+  // edit form so it can show "inherit" vs. explicit values.
+  LayoutOverride layout_override = 8;
 }
 
 message DisplayListRequest {}
 message DisplayListResponse {
   repeated DisplayInfo displays = 1;
+}
+
+// Mutate the per-display layout override for a single display. The
+// daemon writes through to its settings store and re-emits
+// `set_config` to the live consumer (if any) immediately. After the
+// write the daemon also broadcasts a `DisplayChanged` event so other
+// UIs see the new effective layout.
+//
+// Update semantics: each field is taken from the override message
+// only when its matching `*_set` flag is true. To clear (revert to
+// global default), set the field's `*_set` flag false in the new
+// override AND set the corresponding `clear_*` flag below to true.
+// Sending an unspecified override leaves the override entry untouched.
+message DisplayLayoutSetRequest {
+  // Display name as advertised in `register_display`.
+  string name = 1;
+  // New override values. Field set/unset behavior follows the
+  // `LayoutOverride` message rules.
+  LayoutOverride override = 2;
+  // Explicit "remove this field from the override" flags. They take
+  // precedence over `override.*_set` when both are present (set+clear
+  // resolves to clear). Useful for UI that wants to revert a single
+  // field to the global default without sending the full override.
+  bool clear_fillmode = 3;
+  bool clear_align    = 4;
+  bool clear_clear_rgba = 5;
+}
+
+message DisplayLayoutSetResponse {
+  // Updated DisplayInfo for the affected display (with refreshed
+  // `effective_layout`). Empty if the display name was not registered
+  // at the time of the call — the override is still persisted and
+  // takes effect when the display next registers.
+  DisplayInfo display = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +518,13 @@ message GlobalSettings {
   uint32 default_height = 2;
   // Note: fps is per-plugin (in PluginSettings) — different renderer
   // engines have different sane defaults, so it's not a global field.
+  //
+  // Daemon-wide layout defaults applied when a display has no
+  // per-display override. UI sends these as the "default for new
+  // displays" preset. `clear_rgba` may be empty in `SettingsSetRequest`
+  // — the daemon then falls back to opaque black [0,0,0,1]; in
+  // `SettingsGetResponse` the daemon always emits exactly 4 floats.
+  LayoutPrefs layout_defaults = 3;
 }
 
 // One plugin's settings table. Wire format is string→string for
