@@ -29,8 +29,10 @@ dependencies:
   - clangxx_linux-64=22
   - sysroot_linux-64=2.28
 
-  # Vulkan headers (with the conda sysroot active, /usr/include is no longer visible by default)
-  - vulkan-headers
+  # bundled into the AppImage by linuxdeploy.
+  - libvulkan-headers
+  - libvulkan-loader
+  - mesa-libgbm-devel-conda-x86_64
 
   # FFmpeg is built from source by scripts/build_ffmpeg.sh — it gives us a
   # known-minimal codec set and the same sysroot baseline as the rest of the

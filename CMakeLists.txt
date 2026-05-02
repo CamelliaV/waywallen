@@ -14,7 +14,7 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(WAYWALLEN_BUILD_DAEMON  "Build the Rust daemon via Corrosion"   ON)
 option(WAYWALLEN_BUILD_UI      "Build the Qt/QML UI"                   ON)
-option(WAYWALLEN_BUILD_PLUGINS "Build renderer plugins (mpv, image)"   ON)
+option(WAYWALLEN_BUILD_PLUGINS "Build renderer plugins (image, video)" ON)
 
 if(WAYWALLEN_BUILD_DAEMON)
     include(FetchCorrosion)
