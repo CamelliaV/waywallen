@@ -115,6 +115,45 @@ step "Installing into AppDir: $APPDIR"
 rm -rf "$APPDIR"
 cmake --install "$BUILD_DIR"
 
+# ---- 4.5 Build open-wallpaper-engine (waywallen-wescene-renderer) ----
+# Pinned commit; bump explicitly when integrating new owe changes.
+OWE_COMMIT="39504e75b3f35ce789b141112dea49bb3dc7fe0d"
+OWE_SRC="$PROJECT_DIR/build/_owe-src"
+OWE_BUILD="$PROJECT_DIR/build/_owe-build"
+
+step "Fetching open-wallpaper-engine @ $OWE_COMMIT"
+if [[ ! -d "$OWE_SRC/.git" ]]; then
+    git clone https://github.com/waywallen/open-wallpaper-engine.git "$OWE_SRC"
+fi
+# Try a single-SHA fetch first (cheap if the server supports it), fall back
+# to a full fetch otherwise; then hard-reset to the pinned commit so the
+# tree matches even if a previous run left it on something else.
+git -C "$OWE_SRC" fetch --quiet origin "$OWE_COMMIT" 2>/dev/null \
+    || git -C "$OWE_SRC" fetch --quiet origin
+git -C "$OWE_SRC" -c advice.detachedHead=false reset --hard "$OWE_COMMIT"
+
+step "CMake configure: open-wallpaper-engine"
+# CMAKE_PREFIX_PATH puts $INSTALL_DIR ahead of $CONDA_PREFIX so owe's
+# `find_package(waywallen-bridge REQUIRED)` resolves to the bridge we just
+# installed in step 4.
+cmake -S "$OWE_SRC" -B "$OWE_BUILD" \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_SYSROOT="$CONDA_BUILD_SYSROOT" \
+    -DCMAKE_C_FLAGS_INIT="-pthread" \
+    -DCMAKE_CXX_FLAGS_INIT="-pthread" \
+    -DCMAKE_LINKER=lld \
+    -DCMAKE_PREFIX_PATH="$INSTALL_DIR;$CONDA_PREFIX" \
+    -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+    -DBUILD_WAYWALLEN_HOST=ON \
+    -DBUILD_QML=OFF
+
+step "Compiling open-wallpaper-engine"
+cmake --build   "$OWE_BUILD" --parallel
+cmake --install "$OWE_BUILD"
+
 # # ---- 5. Fetch linuxdeploy / appimagetool (cached on first run under build/_tools) ----
 mkdir -p "$TOOLS_DIR"
 LINUXDEPLOY="$TOOLS_DIR/linuxdeploy-x86_64.AppImage"
@@ -188,6 +227,7 @@ EXTRA_QT_PLUGINS="wayland-decoration-client;wayland-shell-integration" \
     --executable "$INSTALL_DIR/bin/waywallen-display-layer-shell" \
     --executable "$INSTALL_DIR/bin/waywallen-image-renderer" \
     --executable "$INSTALL_DIR/bin/waywallen-video-renderer" \
+    --executable "$INSTALL_DIR/bin/waywallen-wescene-renderer" \
     --desktop-file "$DESKTOP_FILE" \
     --icon-file "$ICON_FILE" \
     --custom-apprun "$APPRUN_TMP"

@@ -55,91 +55,63 @@
       `release_syncobj@release_point` before re-recording into the same
       `image_index`.
 
-  Version: 6
+  Surface (consolidated; pre-1.0, internal testing — no compat shims):
 
-  v6 (settings rename + canonical resource key):
-    - The `init` and `apply_settings` requests rename their
-      `plugin_settings` kv list to `settings`. Inside `[renderer.X]`
-      the `plugin_` prefix was redundant — the renderer owns the
-      table. No semantic change otherwise; the wire layout is
-      identical (kv_list at the same field offset). Bumping the
-      version forces every renderer subprocess to be rebuilt against
-      the matching bridge so the C struct field name stays in sync.
-    - `init.resource_kind` continues to carry the wallpaper type, but
-      it now mirrors `req.wp_type` verbatim — manifests no longer
-      supply a separate `kind`. Consumers MAY treat the field as
-      advisory; the canonical source is the wallpaper entry.
-    - `init.resource_primary` is now drawn from `metadata["path"]`
-      whenever the renderer manifest declares any schema (`extras`
-      and/or `settings`). Manifests no longer pick a per-renderer
-      primary key.
+    Spawn handshake. Daemon sends `init` (opcode 1) immediately after
+    accept(), carrying the typed spawn payload: extent, fps,
+    test_pattern, the canonical `resource_kind` / `resource_primary`,
+    `resource_extras`, and the manifest-declared `[renderer.settings]`
+    kv list. `resource_kind` mirrors the wallpaper's `wp_type`;
+    `resource_primary` is `metadata["path"]` whenever the renderer
+    manifest declares any extras/settings schema (manifests no longer
+    pick a per-renderer primary key). The renderer answers with
+    `ready`, or rejects with `init_nack` (opcode 8) on unknown
+    `spawn_version` / unsupported `resource_kind`; the daemon kills
+    the child and surfaces the reason.
 
-  v5 (ApplySettings — runtime-tunable knobs):
-    - Opcode 2 — previously the unused legacy `load_scene` request —
-      is repurposed as `apply_settings`. The daemon sends it over a
-      live renderer's IPC socket whenever a non-identity setting on
-      the renderer changes (e.g. mpv `loop_file` / `hwdec`, wescene
-      `volume`) without respawning the child. `fps` is carried as a
-      typed field with `0` as the "unset" sentinel (XML codegen lacks
-      `optional u32`).
-    - Pairs with the daemon-side identity-aware `find_reusable`:
-      reusing a live renderer that differs only on hot-reloadable
-      settings issues an `apply_settings` instead of spawning a
-      duplicate child.
+    Hot reload. Daemon dispatches `apply_settings` (opcode 2) over a
+    live renderer's IPC whenever a non-identity setting in the
+    `[renderer.settings]` table changes (mpv `loop_file`/`hwdec`,
+    video `volume`, wescene `volume`, `fps`, …) instead of respawning
+    the child. `fps` is encoded as `u32` with `0` as the "unset"
+    sentinel (the codegen has no `optional u32`). Pairs with the
+    daemon-side identity-aware `find_reusable`: a live renderer
+    differing only on hot-reloadable settings is reused via
+    `apply_settings` rather than respawned.
 
-  v4 (Init handshake — additive):
-    - Daemon repurposes opcode 1 (was `hello`) into `init`. After
-      accept() the daemon now sends an `init` request carrying the
-      typed spawn payload (extent / fps / test_pattern / resource /
-      plugin_settings) before reading the renderer's `ready` event.
-      Step 1 of the renderer-Init refactor still also passes the
-      legacy `--key value` argv; renderers MAY ignore the new `init`
-      message and continue parsing argv. Step 3 will switch each
-      renderer to consume the `init` message and the daemon will
-      stop forwarding metadata via argv.
-    - New event `init_nack` (opcode 8) lets a renderer reject an
-      unsupported `init` (e.g. `spawn_version` mismatch or unknown
-      `resource_kind`) with a structured reason; the daemon kills
-      the child and surfaces the reason to the caller.
+    Modifier negotiation. The renderer ships `format_caps` after
+    `ready` and before any `bind_buffers`, advertising
+    fourcc/modifier/usage/plane_count grids plus device_uuid,
+    sync_caps, color_caps, and mem_hints. The daemon pairs producer
+    caps with consumer caps and answers with `negotiate_buffers`
+    naming the chosen fourcc, modifier, plane_count, sync_mode,
+    color_space, mem_hint, extent, and pool size. The renderer
+    replies with a fresh `bind_buffers` whose fourcc+modifier match;
+    on allocator refusal it emits `bind_failed`, the daemon
+    blacklists that (fourcc, modifier) pair on this renderer, and
+    the picker re-runs.
 
-  v2 (modifier negotiation):
-    - Renderer ships `format_caps` event after `ready` and before any
-      `bind_buffers`. Carries fourcc/modifier/usage/plane_count grids
-      plus device_uuid + sync_caps + color_caps + mem_hints. Daemon
-      pairs producer caps with consumer caps and picks a scheme.
-    - Daemon dispatches `negotiate_buffers` request — replacement for
-      `configure_buffers` — telling the renderer exactly which fourcc,
-      modifier, plane_count, sync_mode, color_space, mem_hint, extent
-      and pool size to allocate. The renderer answers with a fresh
-      `bind_buffers` whose fourcc + modifier match.
-    - Renderer replies with `bind_failed` event when it cannot satisfy
-      a `negotiate_buffers` (e.g. allocator refuses the modifier on
-      this device); daemon blacklists that (fourcc, modifier) pair on
-      the renderer and re-runs the picker.
-    - `configure_buffers` is retained for the Iter 1+2 transition but
-      is dispatch-paused in the daemon; Iter 3 deletes it outright.
+    Explicit allocation path. `negotiate_buffers` carries `path` and
+    `mem_source`: the daemon classifies GPU topology (same-device /
+    same-vendor / cross-vendor) and tells the bridge exactly which
+    allocation strategy to take — no plugin ever has to fall back to
+    LINEAR on its own. Codes mirror `ww_path_category` and
+    `ww_mem_source` in <waywallen-bridge/pool.h>:
+      path: 0=OPTIMIZED_SAME_DEVICE  daemon-picked tile modifier
+            1=OPTIMIZED_SAME_VENDOR  conservative modifier subset
+            2=COMPAT_LINEAR          force LINEAR; mem_source picks source
+            3=COMPAT_CPU_READBACK    reserved
+      mem:  0=GPU_NATIVE             GBM render-usage / VK DEVICE_LOCAL
+            1=GPU_LINEAR             GBM_BO_USE_LINEAR / VK LINEAR exportable
+            2=DMABUF_HEAP            /dev/dma_heap/* fallback
+    `format_caps.mem_hints` bit 4 = LINEAR_ONLY signals that the
+    producer's modifier-aware probe failed entirely (e.g. NVIDIA
+    proprietary where every modifier is external_only), forcing the
+    daemon to pick a COMPAT_LINEAR path regardless of consumer caps.
 
-  v3 (explicit path negotiation):
-    - `negotiate_buffers` carries `path` and `mem_source` — the daemon
-      now classifies GPU topology (same-device / same-vendor / cross
-      vendor) and selects an explicit allocation path. The bridge in
-      the renderer subprocess just executes the directive; no plugin
-      ever has to fall back to LINEAR on its own. `path` codes mirror
-      `ww_path_category` in <waywallen-bridge/pool.h>:
-        0 = OPTIMIZED_SAME_DEVICE  use the daemon-picked tile modifier
-        1 = OPTIMIZED_SAME_VENDOR  conservative modifier subset (Iter 2)
-        2 = COMPAT_LINEAR          force LINEAR; mem_source picks the source
-        3 = COMPAT_CPU_READBACK    Iter 3+, reserved
-      `mem_source` codes mirror `ww_mem_source`:
-        0 = GPU_NATIVE             GBM render-usage / VK DEVICE_LOCAL
-        1 = GPU_LINEAR             GBM_BO_USE_LINEAR / VK LINEAR exportable
-        2 = DMABUF_HEAP            /dev/dma_heap/* fallback
-    - `format_caps.mem_hints` adds bit 4 = LINEAR_ONLY: producer's own
-      modifier-aware probe failed entirely (e.g. NVIDIA proprietary
-      where every modifier is external_only); the daemon must pick a
-      COMPAT_LINEAR path regardless of consumer caps.
+  Version: 1
 -->
-<protocol name="waywallen_ipc" version="6">
+<protocol name="waywallen_ipc" version="1">
 
   <!-- ==================================================================
        REQUESTS  (daemon -> subprocess, control plane)
