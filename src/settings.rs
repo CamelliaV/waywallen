@@ -752,6 +752,7 @@ baz = "7"
             inner: Arc::new(StdRwLock::new(Settings {
                 global: GlobalSettings::default(),
                 plugins,
+                displays: HashMap::new(),
             })),
             notify: Arc::new(Notify::new()),
             path: PathBuf::from("/dev/null"),

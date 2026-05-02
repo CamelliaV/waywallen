@@ -31,6 +31,37 @@ auto Display::linksFromPb(const proto::DisplayInfo& info) -> QVariantList {
     return out;
 }
 
+auto Display::effectiveLayoutFromPb(const proto::DisplayInfo& info) -> QVariantMap {
+    QVariantMap m;
+    if (! info.hasEffectiveLayout()) return m;
+    const auto& l = info.effectiveLayout();
+    m[u"fillmode"_s] = static_cast<int>(l.fillmode());
+    m[u"align"_s]    = static_cast<int>(l.align());
+    QVariantList rgba;
+    for (auto v : l.clearRgba()) {
+        rgba.append(QVariant(v));
+    }
+    m[u"clearRgba"_s] = rgba;
+    return m;
+}
+
+auto Display::layoutOverrideFromPb(const proto::DisplayInfo& info) -> QVariantMap {
+    QVariantMap m;
+    if (! info.hasLayoutOverride()) return m;
+    const auto& o = info.layoutOverride();
+    m[u"fillmodeSet"_s] = o.fillmodeSet();
+    m[u"fillmode"_s]    = static_cast<int>(o.fillmode());
+    m[u"alignSet"_s]    = o.alignSet();
+    m[u"align"_s]       = static_cast<int>(o.align());
+    m[u"clearRgbaSet"_s] = o.clearRgbaSet();
+    QVariantList rgba;
+    for (auto v : o.clearRgba()) {
+        rgba.append(QVariant(v));
+    }
+    m[u"clearRgba"_s] = rgba;
+    return m;
+}
+
 Display::Display(const proto::DisplayInfo& info, QObject* parent)
     : QObject(parent),
       m_id(info.displayId()),
@@ -38,7 +69,9 @@ Display::Display(const proto::DisplayInfo& info, QObject* parent)
       m_width(info.width()),
       m_height(info.height()),
       m_refresh_mhz(info.refreshMhz()),
-      m_links(linksFromPb(info)) {}
+      m_links(linksFromPb(info)),
+      m_effective_layout(effectiveLayoutFromPb(info)),
+      m_layout_override(layoutOverrideFromPb(info)) {}
 
 void Display::updateFrom(const proto::DisplayInfo& info) {
     assert(info.displayId() == m_id, "Display::updateFrom id mismatch");
@@ -65,6 +98,13 @@ void Display::updateFrom(const proto::DisplayInfo& info) {
     if (m_links != new_links) {
         m_links = std::move(new_links);
         Q_EMIT linksChanged();
+    }
+    auto new_eff = effectiveLayoutFromPb(info);
+    auto new_ovr = layoutOverrideFromPb(info);
+    if (m_effective_layout != new_eff || m_layout_override != new_ovr) {
+        m_effective_layout = std::move(new_eff);
+        m_layout_override  = std::move(new_ovr);
+        Q_EMIT layoutChanged();
     }
 }
 

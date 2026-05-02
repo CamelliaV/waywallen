@@ -53,6 +53,9 @@ using proto::DisplayInfo;
 using proto::DisplayLinkInfo;
 using proto::DisplayListRequest;
 using proto::DisplayListResponse;
+using proto::LayoutOverride;
+using proto::DisplayLayoutSetRequest;
+using proto::DisplayLayoutSetResponse;
 
 using proto::LibraryInstance;
 using proto::LibraryListRequest;
@@ -71,4 +74,7 @@ using proto::SettingsGetRequest;
 using proto::SettingsGetResponse;
 using proto::SettingsSetRequest;
 using proto::SettingsChanged;
+using proto::LayoutPrefs;
+using proto::FillModeGadget::FillMode;
+using proto::AlignGadget::Align;
 } // namespace waywallen::control::v1

@@ -67,15 +67,15 @@ MD.Page {
     Connections {
         target: settingsQuery
         function onPluginsChanged() {
-            if (pluginSettingsDialog.opened) {
-                const p = settingsQuery.plugins[pluginSettingsDialog.pluginName];
-                pluginSettingsDialog.syncCurrent(p);
+            if (pluginSettingsPopup.opened) {
+                const p = settingsQuery.plugins[pluginSettingsPopup.pluginName];
+                pluginSettingsPopup.syncCurrent(p);
             }
         }
     }
 
-    PluginSettingsDialog {
-        id: pluginSettingsDialog
+    PluginSettingsPopup {
+        id: pluginSettingsPopup
         pluginName: ""
         schemaList: []
     }
@@ -292,14 +292,14 @@ MD.Page {
                                     visible: pluginItem.hasSettings
                                     icon.name: MD.Token.icon.settings
                                     onClicked: {
-                                        pluginSettingsDialog.pluginName = pluginItem.modelData.name;
-                                        pluginSettingsDialog.schemaList = pluginItem.modelData.settings || [];
-                                        pluginSettingsDialog.allCurrentPlugins = settingsQuery.plugins || ({});
-                                        pluginSettingsDialog.currentGlobal = settingsQuery.global || ({});
+                                        pluginSettingsPopup.pluginName = pluginItem.modelData.name;
+                                        pluginSettingsPopup.schemaList = pluginItem.modelData.settings || [];
+                                        pluginSettingsPopup.allCurrentPlugins = settingsQuery.plugins || ({});
+                                        pluginSettingsPopup.currentGlobal = settingsQuery.global || ({});
                                         const p = settingsQuery.plugins ? settingsQuery.plugins[pluginItem.modelData.name] : undefined;
-                                        pluginSettingsDialog.currentValues = p || ({});
-                                        pluginSettingsDialog.pendingValues = ({});
-                                        pluginSettingsDialog.open();
+                                        pluginSettingsPopup.currentValues = p || ({});
+                                        pluginSettingsPopup.pendingValues = ({});
+                                        pluginSettingsPopup.open();
                                     }
                                 }
                             }

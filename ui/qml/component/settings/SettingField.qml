@@ -42,6 +42,15 @@ ColumnLayout {
     readonly property string description: schema.description_key || ""
     readonly property bool needsRestart: schema.identity === true
 
+    readonly property bool isTextField: {
+        const t = schema.type;
+        if (t === kBool)
+            return false;
+        if (t === kString)
+            return !(schema.choices && schema.choices.length > 0);
+        return !_hasNumericRange();
+    }
+
     function _hasNumericRange() {
         const lo = schema.min || "";
         const hi = schema.max || "";
@@ -69,9 +78,11 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         spacing: 6
+        visible: !root.isTextField || root.needsRestart
 
         MD.Text {
             Layout.fillWidth: true
+            visible: !root.isTextField
             typescale: MD.Token.typescale.label_large
             color: MD.Token.color.on_surface
             text: root.label
@@ -175,6 +186,7 @@ ColumnLayout {
         id: numericField
         MD.TextField {
             text: root.value
+            placeholderText: root.label
             inputMethodHints: root.schema.type === root.kU32 ? Qt.ImhDigitsOnly : Qt.ImhFormattedNumbersOnly
             validator: root.schema.type === root.kU32 ? intValidator : doubleValidator
             onEditingFinished: root._emit(text)
@@ -194,6 +206,7 @@ ColumnLayout {
         id: stringField
         MD.TextField {
             text: root.value
+            placeholderText: root.label
             onEditingFinished: root._emit(text)
         }
     }

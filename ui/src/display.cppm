@@ -33,6 +33,14 @@ class Display : public QObject {
     Q_PROPERTY(quint32 height READ height NOTIFY sizeChanged FINAL)
     Q_PROPERTY(quint32 refreshMhz READ refreshMhz NOTIFY refreshMhzChanged FINAL)
     Q_PROPERTY(QVariantList links READ links NOTIFY linksChanged FINAL)
+    /// Resolved layout currently in use for this display
+    /// (per-display override on top of global defaults). Map keys:
+    /// `fillmode` (int), `align` (int), `clearRgba` (QVariantList<float>, length 4).
+    Q_PROPERTY(QVariantMap effectiveLayout READ effectiveLayout NOTIFY layoutChanged FINAL)
+    /// Sparse per-display override. Same key set as effectiveLayout
+    /// plus `fillmodeSet` / `alignSet` / `clearRgbaSet` booleans
+    /// indicating whether each field is explicitly overridden vs. inherited.
+    Q_PROPERTY(QVariantMap layoutOverride READ layoutOverride NOTIFY layoutChanged FINAL)
 
 public:
     explicit Display(const proto::DisplayInfo& info, QObject* parent = nullptr);
@@ -43,6 +51,8 @@ public:
     auto height() const -> quint32 { return m_height; }
     auto refreshMhz() const -> quint32 { return m_refresh_mhz; }
     auto links() const -> const QVariantList& { return m_links; }
+    auto effectiveLayout() const -> const QVariantMap& { return m_effective_layout; }
+    auto layoutOverride() const -> const QVariantMap& { return m_layout_override; }
 
     /// Diff-update from a freshly-received `DisplayInfo`. Only emits
     /// the signals for properties that actually changed.
@@ -52,9 +62,12 @@ public:
     Q_SIGNAL void sizeChanged();
     Q_SIGNAL void refreshMhzChanged();
     Q_SIGNAL void linksChanged();
+    Q_SIGNAL void layoutChanged();
 
 private:
     static auto linksFromPb(const proto::DisplayInfo& info) -> QVariantList;
+    static auto effectiveLayoutFromPb(const proto::DisplayInfo& info) -> QVariantMap;
+    static auto layoutOverrideFromPb(const proto::DisplayInfo& info) -> QVariantMap;
 
     quint64      m_id;
     QString      m_name;
@@ -62,6 +75,8 @@ private:
     quint32      m_height;
     quint32      m_refresh_mhz;
     QVariantList m_links;
+    QVariantMap  m_effective_layout;
+    QVariantMap  m_layout_override;
 };
 
 /// Singleton model for all currently-registered displays. Fed by:

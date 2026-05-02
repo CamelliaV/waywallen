@@ -46,16 +46,6 @@
     }
   },
   {
-    "commit": "4a706464da0459762e709f2c3f233d3ba3c5818b",
-    "dest": "build/_flatpak_deps/kstore-src",
-    "disable-shallow-clone": false,
-    "type": "git",
-    "url": "https://github.com/hypengw/kstore.git",
-    "x-cmake": {
-      "name": "kstore"
-    }
-  },
-  {
     "commit": "06e971569a203ee1b6ec783d0128040c699e8eae",
     "dest": "build/_flatpak_deps/qml_material-src",
     "disable-shallow-clone": true,

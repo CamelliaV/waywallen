@@ -15,6 +15,46 @@ MD.Page {
 
     property var selectedId: null
 
+    // FillMode/Align enum values mirror proto::FillMode / proto::Align
+    // (control.proto). Keep the *_VALUES arrays in lockstep with the
+    // enum order; *_LABELS is what the UI shows.
+    readonly property var kFillModeValues: [
+        1, // STRETCHED
+        2, // PRESERVE_ASPECT_FIT
+        3, // PRESERVE_ASPECT_CROP
+        7, // CENTERED
+        4, // TILED
+        5, // TILED_ONLY_HORIZONTAL
+        6  // TILED_ONLY_VERTICAL
+    ]
+    readonly property var kFillModeLabels: [
+        "Stretch",
+        "Fit (preserve aspect)",
+        "Crop (preserve aspect)",
+        "Center (1:1)",
+        "Tile",
+        "Tile horizontally",
+        "Tile vertically"
+    ]
+    function fillmodeIndex(value) {
+        const i = root.kFillModeValues.indexOf(value);
+        return i < 0 ? 0 : i;
+    }
+
+    // 3×3 align grid; index = row * 3 + col, values match proto::Align.
+    readonly property var kAlignValues: [
+        1, 2, 3, // top-left, top, top-right
+        4, 5, 6, // left, center, right
+        7, 8, 9  // bottom-left, bottom, bottom-right
+    ]
+    readonly property var kAlignTooltips: [
+        "Top-left", "Top", "Top-right",
+        "Left", "Center", "Right",
+        "Bottom-left", "Bottom", "Bottom-right"
+    ]
+
+    W.DisplayLayoutSetQuery { id: layoutSetQuery }
+
     function layoutRects() {
         const out = [];
         let x = 0;
@@ -318,6 +358,209 @@ MD.Page {
                             color: MD.Token.color.on_surface_variant
                         }
                     }
+                }
+
+                // ---- Layout (fillmode + align) ----
+                MD.Divider {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    Layout.bottomMargin: 4
+                    visible: !!root.selected
+                }
+
+                MD.Text {
+                    visible: !!root.selected
+                    text: "Layout"
+                    typescale: MD.Token.typescale.title_small
+                    color: MD.Token.color.on_surface
+                }
+
+                // Inline status: "Inherits global" vs "Overridden".
+                MD.Text {
+                    Layout.fillWidth: true
+                    visible: !!root.selected
+                    typescale: MD.Token.typescale.body_small
+                    color: MD.Token.color.on_surface_variant
+                    text: {
+                        if (! root.selected) return "";
+                        const ovr = root.selected.layoutOverride || ({});
+                        const parts = [];
+                        if (ovr.fillmodeSet) parts.push("fill mode");
+                        if (ovr.alignSet) parts.push("align");
+                        if (ovr.clearRgbaSet) parts.push("clear color");
+                        return parts.length === 0
+                            ? "Inheriting all fields from global default."
+                            : "Overriding: " + parts.join(", ") + ".";
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: !!root.selected
+                    spacing: 12
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        MD.Text {
+                            text: "Fill mode"
+                            typescale: MD.Token.typescale.label_medium
+                            color: MD.Token.color.on_surface_variant
+                        }
+
+                        RowLayout {
+                            spacing: 6
+                            Layout.fillWidth: true
+
+                            MD.ComboBox {
+                                id: fillmodeBox
+                                Layout.fillWidth: true
+                                model: root.kFillModeLabels
+                                currentIndex: {
+                                    if (! root.selected) return 0;
+                                    const eff = root.selected.effectiveLayout || ({});
+                                    return root.fillmodeIndex(eff.fillmode || 0);
+                                }
+                                onActivated: idx => {
+                                    if (! root.selected) return;
+                                    layoutSetQuery.name = root.selected.name;
+                                    layoutSetQuery.fillmodeSet = true;
+                                    layoutSetQuery.fillmode = root.kFillModeValues[idx];
+                                    layoutSetQuery.alignSet = false;
+                                    layoutSetQuery.clearRgbaSet = false;
+                                    layoutSetQuery.clearFillmode = false;
+                                    layoutSetQuery.clearAlign = false;
+                                    layoutSetQuery.clearClearRgba = false;
+                                    layoutSetQuery.reload();
+                                }
+                            }
+
+                            MD.IconButton {
+                                visible: {
+                                    if (! root.selected) return false;
+                                    const ovr = root.selected.layoutOverride || ({});
+                                    return ovr.fillmodeSet === true;
+                                }
+                                icon.name: MD.Token.icon.refresh
+                                MD.ToolTip.visible: hovered
+                                MD.ToolTip.text: "Revert to global default"
+                                onClicked: {
+                                    if (! root.selected) return;
+                                    layoutSetQuery.name = root.selected.name;
+                                    layoutSetQuery.fillmodeSet = false;
+                                    layoutSetQuery.alignSet = false;
+                                    layoutSetQuery.clearRgbaSet = false;
+                                    layoutSetQuery.clearFillmode = true;
+                                    layoutSetQuery.clearAlign = false;
+                                    layoutSetQuery.clearClearRgba = false;
+                                    layoutSetQuery.reload();
+                                }
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: 4
+
+                        RowLayout {
+                            spacing: 6
+                            MD.Text {
+                                text: "Align"
+                                typescale: MD.Token.typescale.label_medium
+                                color: MD.Token.color.on_surface_variant
+                            }
+                            Item { Layout.fillWidth: true }
+                            MD.IconButton {
+                                visible: {
+                                    if (! root.selected) return false;
+                                    const ovr = root.selected.layoutOverride || ({});
+                                    return ovr.alignSet === true;
+                                }
+                                icon.name: MD.Token.icon.refresh
+                                MD.ToolTip.visible: hovered
+                                MD.ToolTip.text: "Revert to global default"
+                                onClicked: {
+                                    if (! root.selected) return;
+                                    layoutSetQuery.name = root.selected.name;
+                                    layoutSetQuery.fillmodeSet = false;
+                                    layoutSetQuery.alignSet = false;
+                                    layoutSetQuery.clearRgbaSet = false;
+                                    layoutSetQuery.clearFillmode = false;
+                                    layoutSetQuery.clearAlign = true;
+                                    layoutSetQuery.clearClearRgba = false;
+                                    layoutSetQuery.reload();
+                                }
+                            }
+                        }
+
+                        // 3×3 grid of toggle pads. Disabled when the
+                        // active fillmode is Stretched (align has no effect).
+                        GridLayout {
+                            columns: 3
+                            rowSpacing: 4
+                            columnSpacing: 4
+                            enabled: {
+                                if (! root.selected) return false;
+                                const eff = root.selected.effectiveLayout || ({});
+                                // Stretched (1) ignores align.
+                                return (eff.fillmode || 0) !== 1;
+                            }
+                            opacity: enabled ? 1.0 : 0.4
+
+                            Repeater {
+                                model: 9
+                                delegate: Rectangle {
+                                    required property int index
+
+                                    readonly property int alignValue: root.kAlignValues[index]
+                                    readonly property bool isCurrent: {
+                                        if (! root.selected) return false;
+                                        const eff = root.selected.effectiveLayout || ({});
+                                        return (eff.align || 0) === alignValue;
+                                    }
+
+                                    width: 22
+                                    height: 22
+                                    radius: 4
+                                    color: isCurrent ? MD.Token.color.primary : MD.Token.color.surface_container_highest
+                                    border.color: MD.Token.color.outline
+                                    border.width: 1
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 6
+                                        height: 6
+                                        radius: 3
+                                        color: parent.isCurrent ? MD.Token.color.on_primary : MD.Token.color.on_surface_variant
+                                    }
+
+                                    MD.ToolTip.visible: ma.containsMouse
+                                    MD.ToolTip.text: root.kAlignTooltips[index]
+
+                                    MouseArea {
+                                        id: ma
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        onClicked: {
+                                            if (! root.selected) return;
+                                            layoutSetQuery.name = root.selected.name;
+                                            layoutSetQuery.fillmodeSet = false;
+                                            layoutSetQuery.alignSet = true;
+                                            layoutSetQuery.align = parent.alignValue;
+                                            layoutSetQuery.clearRgbaSet = false;
+                                            layoutSetQuery.clearFillmode = false;
+                                            layoutSetQuery.clearAlign = false;
+                                            layoutSetQuery.clearClearRgba = false;
+                                            layoutSetQuery.reload();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
                 }
             }
         }

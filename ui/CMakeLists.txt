@@ -122,7 +122,7 @@ set(QML_FILES
   qml/component/PagePopup.qml
   qml/component/ThumbnailImage.qml
   qml/component/settings/SettingField.qml
-  qml/component/settings/PluginSettingsDialog.qml
+  qml/component/settings/PluginSettingsPopup.qml
   qml/page/WallpaperPage.qml
   qml/page/WallpaperCard.qml
   qml/page/StatusPage.qml

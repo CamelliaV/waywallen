@@ -18,10 +18,37 @@ namespace waywallen
 namespace
 {
 
+auto layout_to_map(const proto::LayoutPrefs& l) -> QVariantMap {
+    QVariantMap m;
+    m[u"fillmode"_s] = static_cast<int>(l.fillmode());
+    m[u"align"_s]    = static_cast<int>(l.align());
+    QVariantList rgba;
+    for (auto v : l.clearRgba()) {
+        rgba.append(QVariant(v));
+    }
+    m[u"clearRgba"_s] = rgba;
+    return m;
+}
+
+auto map_to_layout(const QVariantMap& m) -> proto::LayoutPrefs {
+    proto::LayoutPrefs l;
+    l.setFillmode(static_cast<proto::FillMode>(m.value(u"fillmode"_s).toInt()));
+    l.setAlign(static_cast<proto::Align>(m.value(u"align"_s).toInt()));
+    QList<float> rgba;
+    for (const auto& v : m.value(u"clearRgba"_s).toList()) {
+        rgba.append(v.toFloat());
+    }
+    l.setClearRgba(rgba);
+    return l;
+}
+
 auto global_to_map(const proto::GlobalSettings& g) -> QVariantMap {
     QVariantMap m;
     m[u"defaultWidth"_s]  = g.defaultWidth();
     m[u"defaultHeight"_s] = g.defaultHeight();
+    if (g.hasLayoutDefaults()) {
+        m[u"layoutDefaults"_s] = layout_to_map(g.layoutDefaults());
+    }
     return m;
 }
 
@@ -42,6 +69,12 @@ auto map_to_global(const QVariantMap& m) -> proto::GlobalSettings {
     proto::GlobalSettings g;
     g.setDefaultWidth(m.value(u"defaultWidth"_s).toUInt());
     g.setDefaultHeight(m.value(u"defaultHeight"_s).toUInt());
+    // Round-trip layout_defaults so a single-plugin SettingsSet doesn't
+    // wipe the daemon's current LayoutPrefs (fillmode / align /
+    // clear_rgba). UI never edits these — it just forwards them.
+    if (m.contains(u"layoutDefaults"_s)) {
+        g.setLayoutDefaults(map_to_layout(m.value(u"layoutDefaults"_s).toMap()));
+    }
     return g;
 }
 
