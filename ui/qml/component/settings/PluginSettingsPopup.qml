@@ -25,6 +25,7 @@ MD.Popup {
     dim: true
     closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside
     padding: 0
+    bottomPadding: 8
 
     width: Math.min(parent ? parent.width - 64 : 390, 480)
     height: Math.min(parent ? parent.height - 96 : 720, 720)

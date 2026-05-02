@@ -104,6 +104,8 @@ MD.Page {
                     addQuery.reload();
                 }
             }
+
+            Item {}
         }
     }
 }
