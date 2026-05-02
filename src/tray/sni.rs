@@ -9,11 +9,15 @@ use crate::AppState;
 
 pub struct StatusNotifierItem {
     app: Arc<AppState>,
+    icon_theme_path: String,
 }
 
 impl StatusNotifierItem {
-    pub fn new(app: Arc<AppState>) -> Self {
-        Self { app }
+    pub fn new(app: Arc<AppState>, icon_theme_path: String) -> Self {
+        Self {
+            app,
+            icon_theme_path,
+        }
     }
 }
 
@@ -52,6 +56,11 @@ impl StatusNotifierItem {
     #[zbus(property)]
     fn icon_name(&self) -> &str {
         "org.waywallen.waywallen"
+    }
+
+    #[zbus(property)]
+    fn icon_theme_path(&self) -> &str {
+        &self.icon_theme_path
     }
 
     #[zbus(property)]
