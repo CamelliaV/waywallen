@@ -303,22 +303,20 @@ async fn async_main() -> anyhow::Result<()> {
     {
         let app_for_rot = state.clone();
         let shutdown_for_rot = state.shutdown_subscribe();
-        state.tasks.spawn_async(
-            tasks::TaskKind::Service,
-            "playlist/rotator",
-            async move {
+        state
+            .tasks
+            .spawn_async(tasks::TaskKind::Service, "playlist/rotator", async move {
                 control::run_rotator(app_for_rot, rotation_rx, shutdown_for_rot).await;
                 Ok(())
-            },
-        );
+            });
     }
 
     // Display infrastructure first. The UDS endpoint and (if applicable)
     // the daemon-managed display backend subprocess are queued *before*
     // any source-side work so they hit the runtime as early as
     // possible — display registration must not wait on the Lua scan.
-    let mut display_registry = plugin::display_registry::build_default_registry()
-        .unwrap_or_else(|e| {
+    let mut display_registry =
+        plugin::display_registry::build_default_registry().unwrap_or_else(|e| {
             log::warn!("display registry init failed: {e:#}");
             plugin::display_registry::DisplayRegistry::new()
         });
@@ -374,15 +372,13 @@ async fn async_main() -> anyhow::Result<()> {
         let router = router.clone();
         let sock_path = display_sock_path.clone();
         let shutdown_rx = state.shutdown_subscribe();
-        state.tasks.spawn_async(
-            tasks::TaskKind::Service,
-            "display/endpoint",
-            async move {
+        state
+            .tasks
+            .spawn_async(tasks::TaskKind::Service, "display/endpoint", async move {
                 display_endpoint::serve_with_shutdown(&sock_path, router, shutdown_rx)
                     .await
                     .map_err(|e| anyhow::anyhow!("display endpoint exited: {e}"))
-            },
-        );
+            });
     }
     if let Some(def) = display_backend {
         let sock_path = display_sock_path.clone();
@@ -408,80 +404,84 @@ async fn async_main() -> anyhow::Result<()> {
         let source_mgr = source_mgr.clone();
         let plugin_dirs = cli.plugin_dirs.clone();
         let state_for_task = state.clone();
-        state.tasks.spawn_async(tasks::TaskKind::Startup, "startup/sources", async move {
-            // Step 1 — load Lua plugins off the blocking pool.
-            tokio::task::spawn_blocking(move || {
-                let mut sm = source_mgr.blocking_lock();
-                for dir in plugin::renderer_registry::standard_plugin_dirs("sources") {
-                    if dir.is_dir() {
-                        if let Err(e) = sm.load_all(&dir) {
-                            log::warn!("load sources {}: {e:#}", dir.display());
-                        }
-                    }
-                }
-                for plugin_dir in &plugin_dirs {
-                    let sources_dir = plugin_dir.join("sources");
-                    if sources_dir.is_dir() {
-                        if let Err(e) = sm.load_all(&sources_dir) {
-                            log::warn!("load sources {}: {e:#}", sources_dir.display());
-                        }
-                    }
-                }
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("plugin load join: {e}"))?;
-
-            // Step 1.5 — register loaded plugins in `source_plugin` so
-            // `auto_detect_libraries` can resolve them by name even on
-            // first boot (no libraries configured yet → step 2 below
-            // skips `refresh_sources`, which would otherwise be the
-            // first place an `upsert_plugin` runs).
-            {
-                let infos = {
-                    let sm = state_for_task.source_manager.lock().await;
-                    sm.plugins()
-                };
-                match infos {
-                    Ok(infos) => {
-                        for info in infos {
-                            if let Err(e) = crate::model::repo::upsert_plugin(
-                                &state_for_task.db,
-                                &info.name,
-                                &info.version,
-                            )
-                            .await
-                            {
-                                log::warn!("upsert plugin {}: {e:#}", info.name);
+        state
+            .tasks
+            .spawn_async(tasks::TaskKind::Startup, "startup/sources", async move {
+                // Step 1 — load Lua plugins off the blocking pool.
+                tokio::task::spawn_blocking(move || {
+                    let mut sm = source_mgr.blocking_lock();
+                    for dir in plugin::renderer_registry::standard_plugin_dirs("sources") {
+                        if dir.is_dir() {
+                            if let Err(e) = sm.load_all(&dir) {
+                                log::warn!("load sources {}: {e:#}", dir.display());
                             }
                         }
                     }
-                    Err(e) => log::warn!("enumerate loaded plugins: {e:#}"),
-                }
-            }
-
-            // Step 2 — scan against DB-driven libraries + sync results
-            // + seed the playlist. Skip when no libraries are
-            // configured: a brand-new user has nothing to scan, and
-            // `refresh_sources` would flip `scan_in_progress` true →
-            // false in a tight window, flashing the UI loading
-            // indicator on first launch.
-            let skip_refresh = crate::model::repo::list_libraries(&state_for_task.db)
+                    for plugin_dir in &plugin_dirs {
+                        let sources_dir = plugin_dir.join("sources");
+                        if sources_dir.is_dir() {
+                            if let Err(e) = sm.load_all(&sources_dir) {
+                                log::warn!("load sources {}: {e:#}", sources_dir.display());
+                            }
+                        }
+                    }
+                })
                 .await
-                .map(|v| v.is_empty())
-                .unwrap_or(false);
-            if skip_refresh {
-                log::debug!("no libraries configured; skipping initial source refresh");
-            } else if let Err(e) = control::refresh_sources(&state_for_task).await {
-                log::warn!("initial source refresh failed: {e:#}");
-            }
+                .map_err(|e| anyhow::anyhow!("plugin load join: {e}"))?;
 
-            // Sources + initial DB sync done. Publish the latched
-            // phase marker; the restore coordinator (separate task)
-            // observes this and the matching DisplayReady marker
-            // before kicking off the actual restore.
-            state_for_task.events.publish(events::GlobalEvent::SourcesReady);
-            Ok(())
-        });
+                // Step 1.5 — register loaded plugins in `source_plugin` so
+                // `auto_detect_libraries` can resolve them by name even on
+                // first boot (no libraries configured yet → step 2 below
+                // skips `refresh_sources`, which would otherwise be the
+                // first place an `upsert_plugin` runs).
+                {
+                    let infos = {
+                        let sm = state_for_task.source_manager.lock().await;
+                        sm.plugins()
+                    };
+                    match infos {
+                        Ok(infos) => {
+                            for info in infos {
+                                if let Err(e) = crate::model::repo::upsert_plugin(
+                                    &state_for_task.db,
+                                    &info.name,
+                                    &info.version,
+                                )
+                                .await
+                                {
+                                    log::warn!("upsert plugin {}: {e:#}", info.name);
+                                }
+                            }
+                        }
+                        Err(e) => log::warn!("enumerate loaded plugins: {e:#}"),
+                    }
+                }
+
+                // Step 2 — scan against DB-driven libraries + sync results
+                // + seed the playlist. Skip when no libraries are
+                // configured: a brand-new user has nothing to scan, and
+                // `refresh_sources` would flip `scan_in_progress` true →
+                // false in a tight window, flashing the UI loading
+                // indicator on first launch.
+                let skip_refresh = crate::model::repo::list_libraries(&state_for_task.db)
+                    .await
+                    .map(|v| v.is_empty())
+                    .unwrap_or(false);
+                if skip_refresh {
+                    log::debug!("no libraries configured; skipping initial source refresh");
+                } else if let Err(e) = control::refresh_sources(&state_for_task).await {
+                    log::warn!("initial source refresh failed: {e:#}");
+                }
+
+                // Sources + initial DB sync done. Publish the latched
+                // phase marker; the restore coordinator (separate task)
+                // observes this and the matching DisplayReady marker
+                // before kicking off the actual restore.
+                state_for_task
+                    .events
+                    .publish(events::GlobalEvent::SourcesReady);
+                Ok(())
+            });
     }
 
     // Display watcher: bridge from `Router` events to the global
@@ -495,7 +495,9 @@ async fn async_main() -> anyhow::Result<()> {
             "boot/display-watcher",
             async move {
                 if !watcher_state.router.snapshot_displays().await.is_empty() {
-                    watcher_state.events.publish(events::GlobalEvent::DisplayReady);
+                    watcher_state
+                        .events
+                        .publish(events::GlobalEvent::DisplayReady);
                     return Ok(());
                 }
                 let mut events_rx = watcher_state.router.subscribe_events();
@@ -507,9 +509,7 @@ async fn async_main() -> anyhow::Result<()> {
                                 .publish(events::GlobalEvent::DisplayReady);
                             return Ok(());
                         }
-                        Ok(routing::RouterEvent::DisplaysReplace(list))
-                            if !list.is_empty() =>
-                        {
+                        Ok(routing::RouterEvent::DisplaysReplace(list)) if !list.is_empty() => {
                             watcher_state
                                 .events
                                 .publish(events::GlobalEvent::DisplayReady);
@@ -549,9 +549,7 @@ async fn async_main() -> anyhow::Result<()> {
             async move {
                 let mut display_rx = coord_state.events.watch_display_ready();
                 let _ = display_rx.wait_for(|v| *v).await;
-                log::info!(
-                    "restore coordinator: display registered, settling 2s before restore"
-                );
+                log::info!("restore coordinator: display registered, settling 2s before restore");
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                 let restore_state = coord_state.clone();
@@ -577,15 +575,13 @@ async fn async_main() -> anyhow::Result<()> {
         let probe_for_task = probe.clone();
         let db_for_task = db.clone();
         let shutdown_for_task = state.shutdown.subscribe();
-        state.tasks.spawn_async(
-            tasks::TaskKind::Service,
-            "probe/scheduler",
-            async move {
+        state
+            .tasks
+            .spawn_async(tasks::TaskKind::Service, "probe/scheduler", async move {
                 probe_task::scheduler_loop(db_for_task, probe_for_task, shutdown_for_task)
                     .await
                     .map_err(anyhow::Error::from)
-            },
-        );
+            });
     }
 
     // Bind the WS control plane (port 0 = OS picks an available port).
@@ -649,9 +645,7 @@ async fn async_main() -> anyhow::Result<()> {
     // Without this branch the runtime tears down abruptly and the
     // settings debounced-writer task is dropped mid-sleep, losing any
     // pending `last_wallpaper` / `active_playlist_id` updates.
-    let mut sigterm = tokio::signal::unix::signal(
-        tokio::signal::unix::SignalKind::terminate(),
-    )?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     tokio::select! {
         res = ws_fut => {

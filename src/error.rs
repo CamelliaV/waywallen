@@ -207,11 +207,9 @@ impl Error {
         use pb::ErrorCode as E;
         match self {
             Self::WithContext { source, .. } => source.error_code(),
-            Self::Internal(_)
-            | Self::Io(_)
-            | Self::Json(_)
-            | Self::Join(_)
-            | Self::Lua(_) => E::Internal,
+            Self::Internal(_) | Self::Io(_) | Self::Json(_) | Self::Join(_) | Self::Lua(_) => {
+                E::Internal
+            }
             Self::Db(_) => E::Db,
             Self::Decode(_) => E::Decode,
             Self::UnexpectedPayload(_) => E::UnexpectedPayload,

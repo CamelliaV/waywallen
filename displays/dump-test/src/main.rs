@@ -198,8 +198,8 @@ fn main() -> Result<()> {
     // fallback, which wouldn't exercise the tiled-modifier path.
     let vk = vk_consumer::VkContext::new()?;
 
-    let stream = UnixStream::connect(socket)
-        .with_context(|| format!("connect {}", socket.display()))?;
+    let stream =
+        UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
@@ -386,7 +386,10 @@ fn consumer_loop(stream: &UnixStream, cli: &Cli, vk: &vk_consumer::VkContext) ->
                 seq,
             } => {
                 if fds.len() != 2 {
-                    bail!("FrameReady: expected 2 fds (acquire, release), got {}", fds.len());
+                    bail!(
+                        "FrameReady: expected 2 fds (acquire, release), got {}",
+                        fds.len()
+                    );
                 }
                 let release_fd = fds.remove(1);
                 let acquire_fd = fds.remove(0);
@@ -395,7 +398,10 @@ fn consumer_loop(stream: &UnixStream, cli: &Cli, vk: &vk_consumer::VkContext) ->
                     .ok_or_else(|| anyhow!("FrameReady without prior BindBuffers"))?;
                 let buf_idx = buffer_index as usize;
                 if buf_idx >= p.fds.len() {
-                    bail!("FrameReady buffer_index {buf_idx} out of pool {}", p.fds.len());
+                    bail!(
+                        "FrameReady buffer_index {buf_idx} out of pool {}",
+                        p.fds.len()
+                    );
                 }
 
                 if let Some(dump_dir) = &cli.dump_dir {

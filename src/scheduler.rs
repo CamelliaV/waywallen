@@ -194,7 +194,8 @@ impl Scheduler {
         // need release aggregation (the old fds are gone).
         if let Some(old) = &self.active {
             if old.buffer_generation != binding.buffer_generation {
-                self.pending.retain(|(gen, _, _), _| *gen == binding.buffer_generation);
+                self.pending
+                    .retain(|(gen, _, _), _| *gen == binding.buffer_generation);
             }
         }
         self.active = Some(binding);

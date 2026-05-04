@@ -39,8 +39,18 @@ pub struct LinkDstRect {
 
 /// Sentinel for "use the renderer's full texture / display's full
 /// surface". The router resolves this at sync_display time.
-pub const FULL_SRC: LinkSrcRect = LinkSrcRect { x: 0.0, y: 0.0, w: f32::INFINITY, h: f32::INFINITY };
-pub const FULL_DST: LinkDstRect = LinkDstRect { x: 0.0, y: 0.0, w: f32::INFINITY, h: f32::INFINITY };
+pub const FULL_SRC: LinkSrcRect = LinkSrcRect {
+    x: 0.0,
+    y: 0.0,
+    w: f32::INFINITY,
+    h: f32::INFINITY,
+};
+pub const FULL_DST: LinkDstRect = LinkDstRect {
+    x: 0.0,
+    y: 0.0,
+    w: f32::INFINITY,
+    h: f32::INFINITY,
+};
 
 /// A single (renderer → display) routing edge. Phase 3 grows
 /// geometry; Phase 4 adds per-link multiplexing on the wire.

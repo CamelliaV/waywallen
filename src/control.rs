@@ -117,7 +117,10 @@ async fn apply_wallpaper_inner(
     // on `SettingsSet`). The D-Bus / scheduler / rotator entry points
     // don't take per-call setting overrides, so this is the canonical
     // source.
-    let spawn_settings = app.settings.plugin(&renderer_plugin_name).unwrap_or_default();
+    let spawn_settings = app
+        .settings
+        .plugin(&renderer_plugin_name)
+        .unwrap_or_default();
     let spawn_req = renderer_manager::SpawnRequest {
         wp_type: entry.wp_type.clone(),
         extras,
@@ -540,9 +543,10 @@ pub async fn auto_detect_libraries(
     }
 
     if !added.is_empty() {
-        app.events.publish(crate::events::GlobalEvent::LibrariesAdded {
-            paths: added.iter().map(|s| s.path.clone()).collect(),
-        });
+        app.events
+            .publish(crate::events::GlobalEvent::LibrariesAdded {
+                paths: added.iter().map(|s| s.path.clone()).collect(),
+            });
     }
 
     if !added.is_empty() {
@@ -598,7 +602,10 @@ pub async fn libraries_by_plugin_name(
     let libs = repo::list_libraries(db).await?;
     let mut by_plugin_id: HashMap<i64, Vec<String>> = HashMap::new();
     for lib in libs {
-        by_plugin_id.entry(lib.plugin_id).or_default().push(lib.path);
+        by_plugin_id
+            .entry(lib.plugin_id)
+            .or_default()
+            .push(lib.path);
     }
     let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
     for (pid, paths) in by_plugin_id {
@@ -618,7 +625,8 @@ pub async fn refresh_sources(app: &Arc<AppState>) -> Result<usize> {
     use std::sync::atomic::Ordering;
     app.scan_in_progress.store(true, Ordering::SeqCst);
     app.events.publish(crate::events::GlobalEvent::ScanStarted);
-    app.events.publish(crate::events::GlobalEvent::StatusChanged);
+    app.events
+        .publish(crate::events::GlobalEvent::StatusChanged);
 
     let result = refresh_sources_inner(app).await;
 
@@ -631,7 +639,8 @@ pub async fn refresh_sources(app: &Arc<AppState>) -> Result<usize> {
             .events
             .publish(crate::events::GlobalEvent::ScanFailed(format!("{e:#}"))),
     }
-    app.events.publish(crate::events::GlobalEvent::StatusChanged);
+    app.events
+        .publish(crate::events::GlobalEvent::StatusChanged);
     result
 }
 
@@ -679,13 +688,13 @@ async fn refresh_sources_inner(app: &Arc<AppState>) -> Result<usize> {
             .filter(|e| e.plugin_name == info.name)
             .cloned()
             .collect();
-        let protected = libs_by_plugin
-            .get(&info.name)
-            .cloned()
-            .unwrap_or_default();
+        let protected = libs_by_plugin.get(&info.name).cloned().unwrap_or_default();
         match sync::sync_plugin_entries(
             &app.db,
-            sync::PluginRef { name: &info.name, version: &info.version },
+            sync::PluginRef {
+                name: &info.name,
+                version: &info.version,
+            },
             &entries,
             &protected,
         )
@@ -709,8 +718,7 @@ async fn refresh_sources_inner(app: &Arc<AppState>) -> Result<usize> {
     // the All pseudo-playlist this just clones the snapshot ids;
     // smart playlists re-run their filter; curated playlists prune
     // members that no longer exist on disk.
-    if let Err(e) =
-        crate::playlist::resolve::rebind_locked(&app.db, &snapshot, &app.playlist).await
+    if let Err(e) = crate::playlist::resolve::rebind_locked(&app.db, &snapshot, &app.playlist).await
     {
         log::warn!("playlist rebind after refresh failed: {e:#}");
     }

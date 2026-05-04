@@ -46,10 +46,7 @@ fn generated_c_compiles_cleanly() {
     let header = wayproto_gen::emit_c_header_from_xml(&xml).expect("codegen header");
     let source = wayproto_gen::emit_c_source_from_xml(&xml).expect("codegen source");
 
-    let tmp = std::env::temp_dir().join(format!(
-        "wayproto-gen-c-test-{}",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wayproto-gen-c-test-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let h_path = tmp.join("ww_proto.h");
     let c_path = tmp.join("ww_proto.c");
@@ -99,10 +96,7 @@ fn roundtrip_hello_and_bind_buffers() {
     let header = wayproto_gen::emit_c_header_from_xml(&xml).expect("codegen header");
     let source = wayproto_gen::emit_c_source_from_xml(&xml).expect("codegen source");
 
-    let tmp = std::env::temp_dir().join(format!(
-        "wayproto-gen-c-rt-{}",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wayproto-gen-c-rt-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let h_path = tmp.join("ww_proto.h");
     let c_path = tmp.join("ww_proto.c");

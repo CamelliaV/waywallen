@@ -87,10 +87,7 @@ fn default_socket_path() -> PathBuf {
 }
 
 fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = parse_args();
     let sock_path = args.socket.clone().unwrap_or_else(default_socket_path);
     log::info!(
@@ -139,10 +136,12 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
     )
     .map_err(|e| anyhow!("send hello: {e}"))?;
 
-    let (welcome, _fds) =
-        codec::recv_event(&stream).map_err(|e| anyhow!("recv welcome: {e}"))?;
+    let (welcome, _fds) = codec::recv_event(&stream).map_err(|e| anyhow!("recv welcome: {e}"))?;
     match welcome {
-        Event::Welcome { server_version, features } => {
+        Event::Welcome {
+            server_version,
+            features,
+        } => {
             log::info!("welcome from {server_version}, features={features:?}");
             if !features.iter().any(|s| s == "explicit_sync_fd") {
                 return Err(anyhow!(
@@ -150,12 +149,7 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
                 ));
             }
         }
-        other => {
-            return Err(anyhow!(
-                "expected welcome, got opcode {}",
-                other.opcode()
-            ))
-        }
+        other => return Err(anyhow!("expected welcome, got opcode {}", other.opcode())),
     }
 
     // ---- register_display / display_accepted ----
@@ -177,17 +171,16 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
     )
     .map_err(|e| anyhow!("send register_display: {e}"))?;
 
-    let display_id = match codec::recv_event(&stream)
-        .map_err(|e| anyhow!("recv display_accepted: {e}"))?
-    {
-        (Event::DisplayAccepted { display_id }, _) => display_id,
-        (other, _) => {
-            return Err(anyhow!(
-                "expected display_accepted, got opcode {}",
-                other.opcode()
-            ))
-        }
-    };
+    let display_id =
+        match codec::recv_event(&stream).map_err(|e| anyhow!("recv display_accepted: {e}"))? {
+            (Event::DisplayAccepted { display_id }, _) => display_id,
+            (other, _) => {
+                return Err(anyhow!(
+                    "expected display_accepted, got opcode {}",
+                    other.opcode()
+                ))
+            }
+        };
     log::info!("registered as display_id={display_id}");
 
     // ---- bind_buffers + set_config ----
@@ -228,8 +221,7 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
         }
     };
 
-    let (cfg, _fds) =
-        codec::recv_event(&stream).map_err(|e| anyhow!("recv set_config: {e}"))?;
+    let (cfg, _fds) = codec::recv_event(&stream).map_err(|e| anyhow!("recv set_config: {e}"))?;
     match cfg {
         Event::SetConfig {
             config_generation,
@@ -241,8 +233,14 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
             log::info!(
                 "set_config gen={config_generation} source=({:.0},{:.0},{:.0},{:.0}) \
                  dest=({:.0},{:.0},{:.0},{:.0}) xform={transform}",
-                source_rect.x, source_rect.y, source_rect.w, source_rect.h,
-                dest_rect.x, dest_rect.y, dest_rect.w, dest_rect.h,
+                source_rect.x,
+                source_rect.y,
+                source_rect.w,
+                source_rect.h,
+                dest_rect.x,
+                dest_rect.y,
+                dest_rect.w,
+                dest_rect.h,
             );
         }
         other => {
@@ -256,8 +254,7 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
     // ---- frame loop ----
     let mut frames_seen: u64 = 0;
     loop {
-        let (evt, fds) =
-            codec::recv_event(&stream).map_err(|e| anyhow!("recv event: {e}"))?;
+        let (evt, fds) = codec::recv_event(&stream).map_err(|e| anyhow!("recv event: {e}"))?;
         match evt {
             Event::FrameReady {
                 buffer_generation: g,
@@ -265,9 +262,7 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
                 seq,
             } => {
                 if g != buffer_generation {
-                    log::warn!(
-                        "stray frame_ready gen={g} (current={buffer_generation}); dropping"
-                    );
+                    log::warn!("stray frame_ready gen={g} (current={buffer_generation}); dropping");
                     drop(fds);
                     continue;
                 }
@@ -308,7 +303,9 @@ fn run_session(sock_path: &Path, args: &Args) -> Result<()> {
             Event::SetConfig { .. } => {
                 log::info!("received updated set_config");
             }
-            Event::Unbind { buffer_generation: g } => {
+            Event::Unbind {
+                buffer_generation: g,
+            } => {
                 log::info!("server unbound generation {g}; ending session");
                 return Ok(());
             }

@@ -16,9 +16,7 @@
 //! `spawn_blocking`, the same model `display_endpoint` uses.
 
 use crate::ipc::generated::{DecodeError, Event, Request};
-use nix::sys::socket::{
-    recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags,
-};
+use nix::sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags};
 use std::io::{IoSlice, IoSliceMut, Read};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -134,12 +132,7 @@ pub fn send_msg_control(sock: &UnixStream, msg: &Request, fds: &[RawFd]) -> Code
     send_control(sock, msg, fds)
 }
 
-fn write_framed(
-    sock: &UnixStream,
-    opcode: u16,
-    body: &[u8],
-    fds: &[RawFd],
-) -> CodecResult<()> {
+fn write_framed(sock: &UnixStream, opcode: u16, body: &[u8], fds: &[RawFd]) -> CodecResult<()> {
     if fds.len() > MAX_FDS_PER_MSG {
         return Err(CodecError::TooManyFds(fds.len()));
     }
@@ -321,10 +314,7 @@ mod tests {
             extent_w: 1920,
             extent_h: 1080,
             extent_mode: 0,
-            settings: vec![
-                ("fps".into(), "60".into()),
-                ("volume".into(), "1.0".into()),
-            ],
+            settings: vec![("fps".into(), "60".into()), ("volume".into(), "1.0".into())],
         };
         let _ = PROTOCOL_VERSION; // silence unused-import warning
         send_control(&a, &sent, &[]).unwrap();
@@ -408,7 +398,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            CodecError::FdCountMismatch { expected: 1, actual: 0 }
+            CodecError::FdCountMismatch {
+                expected: 1,
+                actual: 0
+            }
         ));
     }
 
@@ -424,12 +417,7 @@ mod tests {
     fn back_to_back_frames() {
         let (a, b) = pair();
         send_control(&a, &Request::Play, &[]).unwrap();
-        send_control(
-            &a,
-            &Request::SetFps { fps: 60 },
-            &[],
-        )
-        .unwrap();
+        send_control(&a, &Request::SetFps { fps: 60 }, &[]).unwrap();
         let (r1, _) = recv_control(&b).unwrap();
         let (r2, _) = recv_control(&b).unwrap();
         assert_eq!(r1, Request::Play);

@@ -173,8 +173,10 @@ impl DBusMenu {
                 control::set_shuffle(&app, !was_on).await;
             }
             ID_ROT_OFF | ID_ROT_30S | ID_ROT_1M | ID_ROT_5M | ID_ROT_15M | ID_ROT_1H => {
-                if let Some((_, _, secs)) =
-                    rotate_options().iter().copied().find(|(rid, _, _)| *rid == id)
+                if let Some((_, _, secs)) = rotate_options()
+                    .iter()
+                    .copied()
+                    .find(|(rid, _, _)| *rid == id)
                 {
                     control::set_rotation_interval(&app, secs).await;
                 }
@@ -292,9 +294,7 @@ fn build_root(menu: &MenuState) -> ItemStruct {
 fn build_rotate_submenu(menu: &MenuState) -> ItemStruct {
     let children: Vec<OwnedValue> = rotate_options()
         .iter()
-        .map(|(id, label, secs)| {
-            item_to_value(make_radio(*id, label, menu.rotation_secs == *secs))
-        })
+        .map(|(id, label, secs)| item_to_value(make_radio(*id, label, menu.rotation_secs == *secs)))
         .collect();
     let mut props = HashMap::new();
     props.insert(
@@ -388,9 +388,7 @@ fn props_for(id: i32, menu: &MenuState) -> Option<HashMap<String, OwnedValue>> {
         ID_OPEN_UI => Some(make_leaf(id, "Open UI", None).1),
         ID_NEXT => Some(make_leaf(id, "Next", None).1),
         ID_PREV => Some(make_leaf(id, "Previous", None).1),
-        ID_SEP1 | ID_SEP2 | ID_SEP3 | ID_SEP_PL => {
-            Some(make_leaf(id, "", Some("separator")).1)
-        }
+        ID_SEP1 | ID_SEP2 | ID_SEP3 | ID_SEP_PL => Some(make_leaf(id, "", Some("separator")).1),
         ID_SHUFFLE => Some(make_checkmark(id, "Shuffle", menu.is_shuffle).1),
         ID_ROTATE => Some(make_submenu_parent(id, "Rotate").1),
         ID_ROT_OFF | ID_ROT_30S | ID_ROT_1M | ID_ROT_5M | ID_ROT_15M | ID_ROT_1H => {
@@ -445,8 +443,10 @@ async fn dispatch_click(app: &Arc<AppState>, id: i32) -> zbus::fdo::Result<()> {
             control::set_shuffle(app, !was_on).await;
         }
         ID_ROT_OFF | ID_ROT_30S | ID_ROT_1M | ID_ROT_5M | ID_ROT_15M | ID_ROT_1H => {
-            if let Some((_, _, secs)) =
-                rotate_options().iter().copied().find(|(rid, _, _)| *rid == id)
+            if let Some((_, _, secs)) = rotate_options()
+                .iter()
+                .copied()
+                .find(|(rid, _, _)| *rid == id)
             {
                 control::set_rotation_interval(app, secs).await;
             }

@@ -22,9 +22,7 @@
 //! panics and never aborts.
 
 use super::generated::{DecodeError, Event, Request};
-use nix::sys::socket::{
-    recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags,
-};
+use nix::sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags};
 use std::io::{IoSlice, IoSliceMut, Read};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -96,11 +94,7 @@ pub type CodecResult<T> = Result<T, CodecError>;
 // Send path
 // ---------------------------------------------------------------------------
 
-pub fn send_request(
-    sock: &UnixStream,
-    req: &Request,
-    fds: &[RawFd],
-) -> CodecResult<()> {
+pub fn send_request(sock: &UnixStream, req: &Request, fds: &[RawFd]) -> CodecResult<()> {
     let expected = req.expected_fds();
     if fds.len() != expected as usize {
         return Err(CodecError::FdCountMismatch {
@@ -113,11 +107,7 @@ pub fn send_request(
     write_framed(sock, req.opcode(), &body, fds)
 }
 
-pub fn send_event(
-    sock: &UnixStream,
-    evt: &Event,
-    fds: &[RawFd],
-) -> CodecResult<()> {
+pub fn send_event(sock: &UnixStream, evt: &Event, fds: &[RawFd]) -> CodecResult<()> {
     let expected = evt.expected_fds();
     if fds.len() != expected as usize {
         return Err(CodecError::FdCountMismatch {
@@ -130,16 +120,13 @@ pub fn send_event(
     write_framed(sock, evt.opcode(), &body, fds)
 }
 
-fn write_framed(
-    sock: &UnixStream,
-    opcode: u16,
-    body: &[u8],
-    fds: &[RawFd],
-) -> CodecResult<()> {
+fn write_framed(sock: &UnixStream, opcode: u16, body: &[u8], fds: &[RawFd]) -> CodecResult<()> {
     if fds.len() > MAX_FDS_PER_MSG {
         return Err(CodecError::TooManyFds(fds.len()));
     }
-    let total = 4usize.checked_add(body.len()).ok_or(CodecError::FrameTooLarge(usize::MAX))?;
+    let total = 4usize
+        .checked_add(body.len())
+        .ok_or(CodecError::FrameTooLarge(usize::MAX))?;
     if total > u16::MAX as usize {
         return Err(CodecError::FrameTooLarge(total));
     }
@@ -307,8 +294,18 @@ mod tests {
         let (a, b) = pair();
         let sent = Event::SetConfig {
             config_generation: 3,
-            source_rect: Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 },
-            dest_rect: Rect { x: 10.0, y: 20.0, w: 1900.0, h: 1060.0 },
+            source_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 1080.0,
+            },
+            dest_rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                w: 1900.0,
+                h: 1060.0,
+            },
             transform: 0,
             clear_r: 0.0,
             clear_g: 0.0,
@@ -405,7 +402,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            CodecError::FdCountMismatch { expected: 2, actual: 0 }
+            CodecError::FdCountMismatch {
+                expected: 2,
+                actual: 0
+            }
         ));
     }
 
@@ -417,7 +417,10 @@ mod tests {
         let err = send_request(&a, &Request::Bye, &[raw]).unwrap_err();
         assert!(matches!(
             err,
-            CodecError::FdCountMismatch { expected: 0, actual: 1 }
+            CodecError::FdCountMismatch {
+                expected: 0,
+                actual: 1
+            }
         ));
         // close the raw fd we passed in
         unsafe { libc::close(raw) };

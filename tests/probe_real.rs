@@ -18,10 +18,9 @@ fn probe_extracts_wav_format_on_hosts_with_libavformat() {
 
     let mut tmp = tempfile::Builder::new().suffix(".wav").tempfile().unwrap();
     let header: [u8; 44] = [
-        b'R', b'I', b'F', b'F', 37, 0, 0, 0, b'W', b'A', b'V', b'E',
-        b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0,
-        0x44, 0xAC, 0, 0, 0x44, 0xAC, 0, 0, 1, 0, 8, 0,
-        b'd', b'a', b't', b'a', 1, 0, 0, 0,
+        b'R', b'I', b'F', b'F', 37, 0, 0, 0, b'W', b'A', b'V', b'E', b'f', b'm', b't', b' ', 16, 0,
+        0, 0, 1, 0, 1, 0, 0x44, 0xAC, 0, 0, 0x44, 0xAC, 0, 0, 1, 0, 8, 0, b'd', b'a', b't', b'a',
+        1, 0, 0, 0,
     ];
     tmp.write_all(&header).unwrap();
     tmp.write_all(&[0x80]).unwrap();
@@ -32,7 +31,10 @@ fn probe_extracts_wav_format_on_hosts_with_libavformat() {
     match meta.format {
         Some(fmt) => {
             eprintln!("libavformat OK — extracted format={fmt:?}");
-            assert!(fmt.contains("wav"), "format string should contain 'wav', got {fmt:?}");
+            assert!(
+                fmt.contains("wav"),
+                "format string should contain 'wav', got {fmt:?}"
+            );
         }
         None => {
             eprintln!("libavformat unavailable on this host — full probe skipped");

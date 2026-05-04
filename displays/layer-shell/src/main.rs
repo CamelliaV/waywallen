@@ -1,10 +1,10 @@
 //! waywallen-display-layer-shell — Wayland layer-shell wallpaper client.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::net::Shutdown;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -13,9 +13,12 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_callback::{self, WlCallback}, wl_compositor::WlCompositor,
+    wl_buffer::WlBuffer,
+    wl_callback::{self, WlCallback},
+    wl_compositor::WlCompositor,
     wl_output::{self, Transform, WlOutput},
-    wl_registry::WlRegistry, wl_surface::WlSurface,
+    wl_registry::WlRegistry,
+    wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
@@ -84,7 +87,10 @@ fn parse_args() -> Args {
     let socket = socket
         .or_else(|| std::env::var_os("WAYWALLEN_SOCKET").map(PathBuf::from))
         .unwrap_or_else(default_socket_path);
-    Args { socket, name_prefix }
+    Args {
+        socket,
+        name_prefix,
+    }
 }
 
 fn default_socket_path() -> PathBuf {
@@ -307,7 +313,11 @@ impl Dispatch<WlRegistry, GlobalListContents> for App {
     ) {
         use wayland_client::protocol::wl_registry::Event;
         match event {
-            Event::Global { name, interface, version } => {
+            Event::Global {
+                name,
+                interface,
+                version,
+            } => {
                 // Runtime hot-plug: only `wl_output` is interesting —
                 // compositor / dmabuf / layer_shell singletons don't
                 // appear post-startup in any sane setup.
@@ -315,12 +325,7 @@ impl Dispatch<WlRegistry, GlobalListContents> for App {
                     if state.outputs.contains_key(&name) {
                         return;
                     }
-                    let wl_output = registry.bind::<WlOutput, _, _>(
-                        name,
-                        version.min(4),
-                        qh,
-                        name,
-                    );
+                    let wl_output = registry.bind::<WlOutput, _, _>(name, version.min(4), qh, name);
                     state.outputs.insert(
                         name,
                         OutputEntry {
@@ -484,9 +489,7 @@ impl Dispatch<WlOutput, u32> for App {
             if let Some(entry) = state.outputs.get_mut(&output_name) {
                 entry.scale = factor.max(1);
                 if let Some(binding) = entry.binding.as_ref() {
-                    binding
-                        .scale
-                        .store(factor.max(1), Ordering::SeqCst);
+                    binding.scale.store(factor.max(1), Ordering::SeqCst);
                 }
             }
         }
@@ -524,9 +527,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for App {
                 height,
             } => {
                 layer_surface.ack_configure(serial);
-                log::info!(
-                    "output {output_name}: layer_surface configure {width}x{height}"
-                );
+                log::info!("output {output_name}: layer_surface configure {width}x{height}");
                 // Ensure the per-output OutputBinding exists, then
                 // record the size and kick the worker.
                 let Some(entry) = state.outputs.get_mut(&output_name) else {
@@ -538,10 +539,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for App {
                         .surface
                         .clone()
                         .expect("configure before surface created");
-                    let dmabuf = state
-                        .dmabuf
-                        .clone()
-                        .expect("configure before dmabuf bind");
+                    let dmabuf = state.dmabuf.clone().expect("configure before dmabuf bind");
                     Arc::new(OutputBinding {
                         display_name: format!("{}-{}", state.name_prefix, output_name),
                         surface,
@@ -570,9 +568,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for App {
                 // map that full buffer back down to the logical surface
                 // extent via `wp_viewporter`.
                 let scale = entry.scale.max(1);
-                binding
-                    .scale
-                    .store(scale, Ordering::SeqCst);
+                binding.scale.store(scale, Ordering::SeqCst);
                 let physical = (
                     width.saturating_mul(scale as u32),
                     height.saturating_mul(scale as u32),
@@ -593,16 +589,12 @@ impl Dispatch<ZwlrLayerSurfaceV1, u32> for App {
                 // RegisterDisplay carrying these same dims.
                 let arc_binding = binding.clone();
                 if let Err(e) = push_resize_if_registered(&arc_binding, physical) {
-                    log::warn!(
-                        "output {output_name}: push update_display failed: {e}"
-                    );
+                    log::warn!("output {output_name}: push update_display failed: {e}");
                 }
                 state.maybe_spawn_worker(output_name);
             }
             zwlr_layer_surface_v1::Event::Closed => {
-                log::warn!(
-                    "output {output_name}: layer_surface closed by compositor"
-                );
+                log::warn!("output {output_name}: layer_surface closed by compositor");
                 if let Some(entry) = state.outputs.get_mut(&output_name) {
                     entry.surface = None;
                     entry.layer_surface = None;
@@ -637,7 +629,9 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
         match e {
             zwp_linux_dmabuf_v1::Event::Format { format } => {
                 if let Ok(mut g) = state.dmabuf_caps.lock() {
-                    g.entry(format).or_default().insert(0 /* DRM_FORMAT_MOD_LINEAR */);
+                    g.entry(format)
+                        .or_default()
+                        .insert(0 /* DRM_FORMAT_MOD_LINEAR */);
                 }
             }
             zwp_linux_dmabuf_v1::Event::Modifier {
@@ -703,10 +697,7 @@ impl Dispatch<WpViewport, u32> for App {
 fn uds_worker_loop(sock: PathBuf, binding: Arc<OutputBinding>) {
     loop {
         if binding.closed.load(Ordering::SeqCst) {
-            log::info!(
-                "[{}] output closed; worker exiting",
-                binding.display_name
-            );
+            log::info!("[{}] output closed; worker exiting", binding.display_name);
             return;
         }
         let res = run_uds_session(&sock, &binding);
@@ -717,10 +708,7 @@ fn uds_worker_loop(sock: PathBuf, binding: Arc<OutputBinding>) {
         binding.registered.store(false, Ordering::SeqCst);
         binding.last_pushed_size.lock().unwrap().take();
         match res {
-            Ok(()) => log::info!(
-                "[{}] UDS session ended cleanly",
-                binding.display_name
-            ),
+            Ok(()) => log::info!("[{}] UDS session ended cleanly", binding.display_name),
             Err(e) => log::warn!("[{}] UDS session error: {e:#}", binding.display_name),
         }
         if binding.closed.load(Ordering::SeqCst) {
@@ -740,10 +728,7 @@ fn uds_worker_loop(sock: PathBuf, binding: Arc<OutputBinding>) {
 /// the size matches what was last pushed. Worker spawn time + the
 /// post-handshake catch-up in `run_uds_session` cover the gap when
 /// `registered` is still false.
-fn push_resize_if_registered(
-    binding: &Arc<OutputBinding>,
-    physical: (u32, u32),
-) -> Result<()> {
+fn push_resize_if_registered(binding: &Arc<OutputBinding>, physical: (u32, u32)) -> Result<()> {
     if !binding.registered.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -779,10 +764,8 @@ fn push_resize_if_registered(
 }
 
 fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
-    let stream = Arc::new(
-        UnixStream::connect(sock)
-            .with_context(|| format!("connect {}", sock.display()))?,
-    );
+    let stream =
+        Arc::new(UnixStream::connect(sock).with_context(|| format!("connect {}", sock.display()))?);
     // Publish the live stream so the main thread can `shutdown(2)` it
     // on hot-unplug — that unblocks the blocking `recv_event` below.
     *binding.stream.write().unwrap() = Some(stream.clone());
@@ -849,12 +832,11 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
     }
     *binding.last_pushed_size.lock().unwrap() = Some((width, height));
 
-    let display_id = match codec::recv_event(&stream)
-        .map_err(|e| anyhow!("recv display_accepted: {e}"))?
-    {
-        (ProtoEvent::DisplayAccepted { display_id }, _) => display_id,
-        (other, _) => bail!("expected display_accepted, got opcode {}", other.opcode()),
-    };
+    let display_id =
+        match codec::recv_event(&stream).map_err(|e| anyhow!("recv display_accepted: {e}"))? {
+            (ProtoEvent::DisplayAccepted { display_id }, _) => display_id,
+            (other, _) => bail!("expected display_accepted, got opcode {}", other.opcode()),
+        };
 
     // Modifier-negotiation v2 caps. layer-shell hands each dma-buf
     // to the wayland compositor; the compositor imports on whatever
@@ -1016,11 +998,7 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
             } => {
                 let expected = (count * planes_per_buffer) as usize;
                 if fds.len() != expected {
-                    bail!(
-                        "bind_buffers expected {} fds, got {}",
-                        expected,
-                        fds.len()
-                    );
+                    bail!("bind_buffers expected {} fds, got {}", expected, fds.len());
                 }
                 if stride.len() != expected || plane_offset.len() != expected {
                     bail!(
@@ -1164,28 +1142,18 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                         // available. Source defaults to the full buffer;
                         // SetConfig can crop. Destination defaults to
                         // the logical surface size; SetConfig can shrink.
-                        let src = cfg_source.unwrap_or((
-                            0.0,
-                            0.0,
-                            buf_width as f32,
-                            buf_height as f32,
-                        ));
+                        let src =
+                            cfg_source.unwrap_or((0.0, 0.0, buf_width as f32, buf_height as f32));
                         let logical = binding
                             .logical_size
                             .lock()
                             .unwrap()
                             .unwrap_or((buf_width, buf_height));
-                        let dest = cfg_dest_size
-                            .unwrap_or((logical.0 as f32, logical.1 as f32));
+                        let dest = cfg_dest_size.unwrap_or((logical.0 as f32, logical.1 as f32));
 
                         if let Some(vp) = binding.viewport.as_ref() {
                             // wayland-scanner maps `fixed` args to f64.
-                            vp.set_source(
-                                src.0 as f64,
-                                src.1 as f64,
-                                src.2 as f64,
-                                src.3 as f64,
-                            );
+                            vp.set_source(src.0 as f64, src.1 as f64, src.2 as f64, src.3 as f64);
                             vp.set_destination(dest.0 as i32, dest.1 as i32);
                         } else {
                             // Fallback: tell the compositor the buffer
@@ -1216,10 +1184,7 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                         binding.surface.commit();
                         frames_presented += 1;
                         if let Err(e) = binding.conn.flush() {
-                            log::warn!(
-                                "[{}] wayland flush failed: {e}",
-                                binding.display_name
-                            );
+                            log::warn!("[{}] wayland flush failed: {e}", binding.display_name);
                         }
                     }
                 } else {
@@ -1239,7 +1204,9 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                 // the daemon's placeholder reaper does not block on them.
                 let _ = (g, buffer_index, seq);
             }
-            ProtoEvent::Unbind { buffer_generation: g } => {
+            ProtoEvent::Unbind {
+                buffer_generation: g,
+            } => {
                 if Some(g) == gen {
                     log::info!(
                         "[{}] unbind gen={g}; dropping {} buffers",

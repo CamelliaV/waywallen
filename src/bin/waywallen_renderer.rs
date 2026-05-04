@@ -53,12 +53,23 @@ struct Args {
     fps: u32,
 }
 
-fn default_width() -> u32 { 1280 }
-fn default_height() -> u32 { 720 }
-fn default_fps() -> u32 { 60 }
+fn default_width() -> u32 {
+    1280
+}
+fn default_height() -> u32 {
+    720
+}
+fn default_fps() -> u32 {
+    60
+}
 
 fn parse_args() -> Args {
-    let mut args = Args { ipc: None, width: 1280, height: 720, fps: 60 };
+    let mut args = Args {
+        ipc: None,
+        width: 1280,
+        height: 720,
+        fps: 60,
+    };
     let mut iter = std::env::args().skip(1);
     while let Some(a) = iter.next() {
         match a.as_str() {
@@ -66,7 +77,9 @@ fn parse_args() -> Args {
             "--width" => args.width = iter.next().and_then(|s| s.parse().ok()).unwrap_or(1280),
             "--height" => args.height = iter.next().and_then(|s| s.parse().ok()).unwrap_or(720),
             "--fps" => args.fps = iter.next().and_then(|s| s.parse().ok()).unwrap_or(60),
-            _ => { let _ = iter.next(); }
+            _ => {
+                let _ = iter.next();
+            }
         }
     }
     args
@@ -97,9 +110,13 @@ fn main() -> Result<()> {
                 )
             })?
     };
-    unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM); }
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+    }
     let result = run(&instance, &args);
-    unsafe { instance.destroy_instance(None); }
+    unsafe {
+        instance.destroy_instance(None);
+    }
     result
 }
 
@@ -117,7 +134,9 @@ fn query_render_node(
     }
     let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
     let mut props = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
-    unsafe { instance.get_physical_device_properties2(phys, &mut props); }
+    unsafe {
+        instance.get_physical_device_properties2(phys, &mut props);
+    }
     if drm.has_render != vk::TRUE {
         return (0, 0);
     }
@@ -186,7 +205,11 @@ fn allocate_pool(
                 &vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_2D)
                     .format(RENDER_FORMAT)
-                    .extent(vk::Extent3D { width, height, depth: 1 })
+                    .extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    })
                     .mip_levels(1)
                     .array_layers(1)
                     .samples(vk::SampleCountFlags::TYPE_1)
@@ -210,7 +233,9 @@ fn allocate_pool(
                 None,
             )?
         };
-        unsafe { device.bind_image_memory(img, mem, 0)?; }
+        unsafe {
+            device.bind_image_memory(img, mem, 0)?;
+        }
 
         let fd = unsafe {
             ext_mem_fd.get_memory_fd(
@@ -233,16 +258,17 @@ fn allocate_pool(
                 },
             )
         };
-        slots.push(FrameSlot { image: img, memory: mem });
+        slots.push(FrameSlot {
+            image: img,
+            memory: mem,
+        });
         exports.push(PoolExport {
             fd,
             modifier: props.drm_format_modifier,
             stride: layout.row_pitch,
         });
     }
-    log::info!(
-        "allocated pool: {SLOT_COUNT} slots, {width}x{height}, flags=0x{flags:x}"
-    );
+    log::info!("allocated pool: {SLOT_COUNT} slots, {width}x{height}, flags=0x{flags:x}");
     Ok((slots, exports))
 }
 
@@ -257,7 +283,9 @@ fn destroy_pool(device: &ash::Device, slots: Vec<FrameSlot>, exports: Vec<PoolEx
     // (the daemon dup'd ours into its sendmsg). We close our local
     // copies now to avoid leaking fds across rebinds.
     for e in exports {
-        unsafe { libc::close(e.fd); }
+        unsafe {
+            libc::close(e.fd);
+        }
     }
 }
 
@@ -307,12 +335,7 @@ fn transition_pool_to_general(
     Ok(())
 }
 
-fn send_bind_buffers(
-    stream: &UnixStream,
-    pool: &Pool,
-    width: u32,
-    height: u32,
-) -> Result<()> {
+fn send_bind_buffers(stream: &UnixStream, pool: &Pool, width: u32, height: u32) -> Result<()> {
     let fds: Vec<RawFd> = pool.exports.iter().map(|e| e.fd).collect();
     // Standalone test renderer always uses LINEAR → single plane.
     let stride0 = pool.exports[0].stride as u32;
@@ -445,8 +468,11 @@ fn run(instance: &Instance, args: &Args) -> Result<()> {
                 // prototype peer combos so the simplification is safe.
                 const BUF_HOST_VISIBLE: u32 = 1 << 0;
                 const MEM_HINT_HOST_VISIBLE: u32 = 1 << 1;
-                let flags =
-                    if mem_hint & MEM_HINT_HOST_VISIBLE != 0 { BUF_HOST_VISIBLE } else { 0 };
+                let flags = if mem_hint & MEM_HINT_HOST_VISIBLE != 0 {
+                    BUF_HOST_VISIBLE
+                } else {
+                    0
+                };
                 if let Ok(mut g) = p2.lock() {
                     *g = Some(flags);
                 }
@@ -508,7 +534,9 @@ fn run(instance: &Instance, args: &Args) -> Result<()> {
                 log::info!(
                     "ConfigureBuffers: rebuilding pool flags 0x{current_flags:x} → 0x{new_flags:x}"
                 );
-                unsafe { device.device_wait_idle()?; }
+                unsafe {
+                    device.device_wait_idle()?;
+                }
                 let (new_slots, new_exports) =
                     allocate_pool(instance, &device, phys, args.width, args.height, new_flags)?;
                 let next_gen = {
@@ -544,7 +572,9 @@ fn run(instance: &Instance, args: &Args) -> Result<()> {
                 cmd_buf,
                 slot_image,
                 vk::ImageLayout::GENERAL,
-                &vk::ClearColorValue { float32: [r, 0.5, 0.5, 1.0] },
+                &vk::ClearColorValue {
+                    float32: [r, 0.5, 0.5, 1.0],
+                },
                 &[vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
                     .level_count(1)
@@ -592,12 +622,16 @@ fn run(instance: &Instance, args: &Args) -> Result<()> {
         // SCM_RIGHTS dup'd the fd into the kernel's message buffer on
         // success. Close our local copy either way: on success the
         // receiver has its own copy, on failure it's just a leak.
-        unsafe { libc::close(sync_fd); }
+        unsafe {
+            libc::close(sync_fd);
+        }
         let _ = send_result;
         seq += 1;
         let next = start + frame_period * seq as u32;
         let now = std::time::Instant::now();
-        if next > now { thread::sleep(next - now); }
+        if next > now {
+            thread::sleep(next - now);
+        }
     }
 
     unsafe {

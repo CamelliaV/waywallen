@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::display_proto::generated::Rect;
-use crate::display_proto::{codec, error_code, opcode, Event, Request, PROTOCOL_NAME, PROTOCOL_VERSION};
+use crate::display_proto::{
+    codec, error_code, opcode, Event, Request, PROTOCOL_NAME, PROTOCOL_VERSION,
+};
 // Display-protocol failures are all daemon-internal (this layer talks
 // to consumer processes over a UDS, not to the WS/dbus surface). Every
 // anyhow! site in this file is wrapped as `Error::Internal(anyhow!(...))`
@@ -98,9 +100,10 @@ pub async fn serve_with_shutdown(
                 continue;
             }
         };
-        let std_stream = match stream.into_std().and_then(|s| {
-            s.set_nonblocking(false).map(|_| s)
-        }) {
+        let std_stream = match stream
+            .into_std()
+            .and_then(|s| s.set_nonblocking(false).map(|_| s))
+        {
             Ok(s) => s,
             Err(e) => {
                 log::warn!("display into_std failed: {e}");
@@ -133,7 +136,11 @@ async fn handle_client(
 
     let send_ack_stream = stream.try_clone().context("clone for accepted")?;
     tokio::task::spawn_blocking(move || {
-        codec::send_event(&send_ack_stream, &Event::DisplayAccepted { display_id }, &[])
+        codec::send_event(
+            &send_ack_stream,
+            &Event::DisplayAccepted { display_id },
+            &[],
+        )
     })
     .await
     .context("accepted join")?
@@ -169,9 +176,7 @@ async fn do_handshake(
     };
     if protocol != PROTOCOL_NAME {
         let s = stream.try_clone().context("clone for error")?;
-        let msg = format!(
-            "unsupported protocol: {protocol:?} (expected {PROTOCOL_NAME:?})"
-        );
+        let msg = format!("unsupported protocol: {protocol:?} (expected {PROTOCOL_NAME:?})");
         let err_msg = msg.clone();
         let _ = tokio::task::spawn_blocking(move || {
             codec::send_event(
@@ -208,9 +213,7 @@ async fn do_handshake(
         .await;
         return Err(Error::Internal(anyhow!("version mismatch: {msg}")));
     }
-    log::info!(
-        "display hello: {client_name} v{client_version} (proto v{client_protocol_version})"
-    );
+    log::info!("display hello: {client_name} v{client_version} (proto v{client_protocol_version})");
 
     let welcome_stream = stream.try_clone().context("clone for welcome")?;
     tokio::task::spawn_blocking(move || {
@@ -246,7 +249,11 @@ async fn do_handshake(
             reg.opcode()
         )));
     };
-    let instance_id = if instance_id.is_empty() { None } else { Some(instance_id) };
+    let instance_id = if instance_id.is_empty() {
+        None
+    } else {
+        Some(instance_id)
+    };
     log::info!(
         "display register: {name} (instance_id={}) {width}x{height}@{refresh_mhz}mHz drm_render={drm_render_major}:{drm_render_minor}",
         instance_id.as_deref().unwrap_or("<none>")
@@ -429,8 +436,7 @@ async fn recv_request_cancellable(
 ) -> Result<(Request, Vec<OwnedFd>)> {
     let blocking_stream = stream.try_clone().context("clone for recv")?;
     let shutdown_stream = stream.try_clone().context("clone for shutdown-kick")?;
-    let mut handle =
-        tokio::task::spawn_blocking(move || codec::recv_request(&blocking_stream));
+    let mut handle = tokio::task::spawn_blocking(move || codec::recv_request(&blocking_stream));
     tokio::select! {
         biased;
         res = &mut handle => match res {
@@ -549,9 +555,13 @@ fn build_bind_event(snap: &BindSnapshot) -> Result<(Event, Vec<RawFd>)> {
         return Err(Error::Internal(anyhow!(
             "BindSnapshot parallel arrays inconsistent: count={} planes={} expected={} \
              stride={} offset={} size={} fds={}",
-            count, planes_per_buffer, n,
-            snap.stride.len(), snap.plane_offset.len(),
-            snap.size.len(), snap.fds.len()
+            count,
+            planes_per_buffer,
+            n,
+            snap.stride.len(),
+            snap.plane_offset.len(),
+            snap.size.len(),
+            snap.fds.len()
         )));
     }
 
@@ -577,15 +587,25 @@ fn build_bind_event(snap: &BindSnapshot) -> Result<(Event, Vec<RawFd>)> {
     log::debug!(
         "display_endpoint: build_bind_event gen={} count={} planes={} {}x{} \
          fourcc=0x{:08x} mod=0x{:016x}",
-        buffer_generation, count, planes_per_buffer,
-        snap.width, snap.height, snap.fourcc, snap.modifier,
+        buffer_generation,
+        count,
+        planes_per_buffer,
+        snap.width,
+        snap.height,
+        snap.fourcc,
+        snap.modifier,
     );
     for i in 0..n {
         let bi = i / (planes_per_buffer as usize).max(1);
         let pi = i % (planes_per_buffer as usize).max(1);
         log::debug!(
             "  buf[{}].plane[{}] dup_fd={} stride={} plane_offset={} size={}",
-            bi, pi, dup_fds[i], snap.stride[i], snap.plane_offset[i], snap.size[i],
+            bi,
+            pi,
+            dup_fds[i],
+            snap.stride[i],
+            snap.plane_offset[i],
+            snap.size[i],
         );
     }
     Ok((event, dup_fds))
@@ -596,9 +616,11 @@ fn build_bind_event(snap: &BindSnapshot) -> Result<(Event, Vec<RawFd>)> {
 // ---------------------------------------------------------------------------
 
 fn acquire_sync_fd(renderer: &Arc<RendererHandle>, seq: u64) -> Result<OwnedFd> {
-    renderer
-        .clone_sync_fd(seq)
-        .ok_or_else(|| Error::Internal(anyhow!("acquire sync_fd for seq={seq} missing (evicted or never arrived)")))
+    renderer.clone_sync_fd(seq).ok_or_else(|| {
+        Error::Internal(anyhow!(
+            "acquire sync_fd for seq={seq} missing (evicted or never arrived)"
+        ))
+    })
 }
 
 async fn forward_frame_ready(

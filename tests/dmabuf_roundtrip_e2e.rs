@@ -118,10 +118,8 @@ fn caps_discovery_intersection_is_non_empty() {
         return;
     };
 
-    let renderer_caps =
-        common::print_caps(&rbin).expect("image renderer --print-caps");
-    let consumer_caps =
-        common::print_caps(&dbin).expect("dump_display --print-caps");
+    let renderer_caps = common::print_caps(&rbin).expect("image renderer --print-caps");
+    let consumer_caps = common::print_caps(&dbin).expect("dump_display --print-caps");
 
     eprintln!(
         "renderer caps: {} fourccs, {} pairs",
@@ -152,8 +150,10 @@ fn caps_discovery_intersection_is_non_empty() {
     // Until the per-pair E2E flow lands (Phase 2), assert the
     // baseline that the negotiate picker treats as the cross-vendor
     // escape hatch.
-    let abgr_linear = (waywallen::negotiate::DRM_FORMAT_ABGR8888,
-                       waywallen::negotiate::DRM_FORMAT_MOD_LINEAR);
+    let abgr_linear = (
+        waywallen::negotiate::DRM_FORMAT_ABGR8888,
+        waywallen::negotiate::DRM_FORMAT_MOD_LINEAR,
+    );
     assert!(
         pairs.contains(&abgr_linear),
         "expected ABGR8888 + LINEAR in intersection (the universal cross-vendor \
@@ -191,7 +191,10 @@ async fn per_pair_byte_roundtrip() {
     let renderer_caps = common::print_caps(&rbin).expect("renderer --print-caps");
     let consumer_caps = common::print_caps(&dbin).expect("dump_display --print-caps");
     let pairs = common::intersect_caps(&renderer_caps, &consumer_caps);
-    assert!(!pairs.is_empty(), "empty caps intersection — see Phase 1 test");
+    assert!(
+        !pairs.is_empty(),
+        "empty caps intersection — see Phase 1 test"
+    );
 
     for (fc, m) in pairs {
         let label = format!("fourcc={} modifier=0x{m:016x}", fourcc_str(fc));
@@ -225,8 +228,7 @@ async fn run_one_pair(
     let (prod_dir, cons_dir, _keep);
     let _tmp_owner: Option<tempfile::TempDir>;
     if let Some(keep) = std::env::var_os("WAYWALLEN_DUMP_KEEP_DIR") {
-        let base = PathBuf::from(keep)
-            .join(format!("0x{fourcc:08x}-0x{modifier:016x}"));
+        let base = PathBuf::from(keep).join(format!("0x{fourcc:08x}-0x{modifier:016x}"));
         prod_dir = base.join("producer");
         cons_dir = base.join("consumer");
         _keep = base;

@@ -44,16 +44,8 @@ pub fn setting_def_to_proto(key: &str, def: &SettingDef) -> SettingSchema {
         identity: def.identity,
         label_key: def.label_key.clone().unwrap_or_default(),
         description_key: def.description_key.clone().unwrap_or_default(),
-        min: def
-            .min
-            .as_ref()
-            .map(toml_value_to_wire)
-            .unwrap_or_default(),
-        max: def
-            .max
-            .as_ref()
-            .map(toml_value_to_wire)
-            .unwrap_or_default(),
+        min: def.min.as_ref().map(toml_value_to_wire).unwrap_or_default(),
+        max: def.max.as_ref().map(toml_value_to_wire).unwrap_or_default(),
         step: def
             .step
             .as_ref()

@@ -136,10 +136,7 @@ impl SourceManager {
     /// that need a tokio runtime to drive their `sea-orm` calls; the
     /// caller drives this via either an enclosing async context or
     /// `Handle::block_on` from a `spawn_blocking` thread.
-    pub async fn scan_all(
-        &mut self,
-        libs_by_plugin: &HashMap<String, Vec<String>>,
-    ) -> Result<()> {
+    pub async fn scan_all(&mut self, libs_by_plugin: &HashMap<String, Vec<String>>) -> Result<()> {
         self.entries.clear();
         self.by_type.clear();
 
@@ -251,22 +248,22 @@ impl SourceManager {
         ctx.set("list_dirs", list_dirs_fn)?;
 
         // ctx.file_exists(path) -> bool
-        let file_exists_fn = self.lua.create_function(|_, path: String| {
-            Ok(std::path::Path::new(&path).exists())
-        })?;
+        let file_exists_fn = self
+            .lua
+            .create_function(|_, path: String| Ok(std::path::Path::new(&path).exists()))?;
         ctx.set("file_exists", file_exists_fn)?;
 
         // ctx.read_file(path) -> string|nil (capped at 1MB)
-        let read_file_fn = self.lua.create_function(|lua, path: String| {
-            match std::fs::metadata(&path) {
-                Ok(meta) if meta.len() > 1_048_576 => Ok(mlua::Value::Nil),
-                Ok(_) => match std::fs::read_to_string(&path) {
-                    Ok(s) => Ok(mlua::Value::String(lua.create_string(&s)?)),
+        let read_file_fn =
+            self.lua
+                .create_function(|lua, path: String| match std::fs::metadata(&path) {
+                    Ok(meta) if meta.len() > 1_048_576 => Ok(mlua::Value::Nil),
+                    Ok(_) => match std::fs::read_to_string(&path) {
+                        Ok(s) => Ok(mlua::Value::String(lua.create_string(&s)?)),
+                        Err(_) => Ok(mlua::Value::Nil),
+                    },
                     Err(_) => Ok(mlua::Value::Nil),
-                },
-                Err(_) => Ok(mlua::Value::Nil),
-            }
-        })?;
+                })?;
         ctx.set("read_file", read_file_fn)?;
 
         // ctx.extension(path) -> string|nil
@@ -293,9 +290,9 @@ impl SourceManager {
         // ctx.env(name) -> string|nil. Intentionally kept available for
         // auto-detect probing of well-known paths (e.g. $HOME). Not a
         // cache — resolves on every call.
-        let env_fn = self.lua.create_function(|_, name: String| {
-            Ok(std::env::var(&name).ok())
-        })?;
+        let env_fn = self
+            .lua
+            .create_function(|_, name: String| Ok(std::env::var(&name).ok()))?;
         ctx.set("env", env_fn)?;
 
         // ctx.libraries() -> list of absolute library paths registered
@@ -314,12 +311,13 @@ impl SourceManager {
         ctx.set("libraries", libraries_fn)?;
 
         // ctx.json_parse(str) -> table|nil
-        let json_parse_fn = self.lua.create_function(|lua, s: String| {
-            match serde_json::from_str::<serde_json::Value>(&s) {
-                Ok(val) => json_to_lua(lua, &val),
-                Err(_) => Ok(mlua::Value::Nil),
-            }
-        })?;
+        let json_parse_fn =
+            self.lua.create_function(|lua, s: String| {
+                match serde_json::from_str::<serde_json::Value>(&s) {
+                    Ok(val) => json_to_lua(lua, &val),
+                    Err(_) => Ok(mlua::Value::Nil),
+                }
+            })?;
         ctx.set("json_parse", json_parse_fn)?;
 
         // ctx.log(msg)
@@ -345,14 +343,23 @@ impl SourceManager {
         let probe_arc = Arc::clone(&self.probe);
         let probe_fn = self.lua.create_function(move |lua, path: String| {
             let md = probe_arc.probe(&path);
-            if md.size.is_none() && md.width.is_none() && md.height.is_none() && md.format.is_none() {
+            if md.size.is_none() && md.width.is_none() && md.height.is_none() && md.format.is_none()
+            {
                 return Ok(mlua::Value::Nil);
             }
             let tbl = lua.create_table()?;
-            if let Some(v) = md.size { tbl.set("size", v)?; }
-            if let Some(v) = md.width { tbl.set("width", v)?; }
-            if let Some(v) = md.height { tbl.set("height", v)?; }
-            if let Some(v) = md.format { tbl.set("format", v)?; }
+            if let Some(v) = md.size {
+                tbl.set("size", v)?;
+            }
+            if let Some(v) = md.width {
+                tbl.set("width", v)?;
+            }
+            if let Some(v) = md.height {
+                tbl.set("height", v)?;
+            }
+            if let Some(v) = md.format {
+                tbl.set("format", v)?;
+            }
             Ok(mlua::Value::Table(tbl))
         })?;
         ctx.set("probe", probe_fn)?;
@@ -380,39 +387,39 @@ impl SourceManager {
 
             let getter_db = kv_db.clone();
             let getter_plugin = kv_plugin.clone();
-            let library_meta_get_fn = self.lua.create_async_function(
-                move |lua, (lib_path, key): (String, String)| {
-                    let db = getter_db.clone();
-                    let plugin_name = getter_plugin.clone();
-                    async move {
-                        let (Some(db), Some(plugin_name)) = (db, plugin_name) else {
-                            return Ok(mlua::Value::Nil);
-                        };
-                        let res: crate::error::Result<Option<String>> = async {
-                            let Some(plugin) =
-                                repo::find_plugin_by_name(&db, &plugin_name).await?
-                            else {
-                                return Ok(None);
+            let library_meta_get_fn =
+                self.lua
+                    .create_async_function(move |lua, (lib_path, key): (String, String)| {
+                        let db = getter_db.clone();
+                        let plugin_name = getter_plugin.clone();
+                        async move {
+                            let (Some(db), Some(plugin_name)) = (db, plugin_name) else {
+                                return Ok(mlua::Value::Nil);
                             };
-                            let Some(lib) =
-                                repo::find_library(&db, plugin.id, &lib_path).await?
-                            else {
-                                return Ok(None);
-                            };
-                            repo::get_library_metadata_value(&db, lib.id, &key).await
-                        }
-                        .await;
-                        match res {
-                            Ok(Some(v)) => Ok(mlua::Value::String(lua.create_string(&v)?)),
-                            Ok(None) => Ok(mlua::Value::Nil),
-                            Err(e) => {
-                                log::warn!("library_meta_get: {e:#}");
-                                Ok(mlua::Value::Nil)
+                            let res: crate::error::Result<Option<String>> = async {
+                                let Some(plugin) =
+                                    repo::find_plugin_by_name(&db, &plugin_name).await?
+                                else {
+                                    return Ok(None);
+                                };
+                                let Some(lib) =
+                                    repo::find_library(&db, plugin.id, &lib_path).await?
+                                else {
+                                    return Ok(None);
+                                };
+                                repo::get_library_metadata_value(&db, lib.id, &key).await
+                            }
+                            .await;
+                            match res {
+                                Ok(Some(v)) => Ok(mlua::Value::String(lua.create_string(&v)?)),
+                                Ok(None) => Ok(mlua::Value::Nil),
+                                Err(e) => {
+                                    log::warn!("library_meta_get: {e:#}");
+                                    Ok(mlua::Value::Nil)
+                                }
                             }
                         }
-                    }
-                },
-            )?;
+                    })?;
             ctx.set("library_meta_get", library_meta_get_fn)?;
 
             let setter_db = kv_db;
@@ -426,23 +433,16 @@ impl SourceManager {
                             return Ok(false);
                         };
                         let res: crate::error::Result<bool> = async {
-                            let Some(plugin) =
-                                repo::find_plugin_by_name(&db, &plugin_name).await?
+                            let Some(plugin) = repo::find_plugin_by_name(&db, &plugin_name).await?
                             else {
                                 return Ok(false);
                             };
-                            let Some(lib) =
-                                repo::find_library(&db, plugin.id, &lib_path).await?
+                            let Some(lib) = repo::find_library(&db, plugin.id, &lib_path).await?
                             else {
                                 return Ok(false);
                             };
-                            repo::set_library_metadata_value(
-                                &db,
-                                lib.id,
-                                &key,
-                                value.as_deref(),
-                            )
-                            .await?;
+                            repo::set_library_metadata_value(&db, lib.id, &key, value.as_deref())
+                                .await?;
                             Ok(true)
                         }
                         .await;
@@ -572,10 +572,11 @@ impl SourceManager {
             }
             Ok(out)
         };
-        body.await.map_err(|e: mlua::Error| Error::SourceExtrasFailed {
-            plugin: plugin_name.to_string(),
-            message: e.to_string(),
-        })
+        body.await
+            .map_err(|e: mlua::Error| Error::SourceExtrasFailed {
+                plugin: plugin_name.to_string(),
+                message: e.to_string(),
+            })
     }
 
     /// Ask every plugin that exports `auto_detect(ctx)` to probe

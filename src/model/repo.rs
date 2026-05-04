@@ -281,10 +281,7 @@ pub struct ItemUpsertArgs<'a> {
 ///
 /// Returns the stored [`item::Model`] — the caller can use `model.id`
 /// for tag linkage.
-pub async fn upsert_item(
-    db: &DatabaseConnection,
-    args: ItemUpsertArgs<'_>,
-) -> Result<item::Model> {
+pub async fn upsert_item(db: &DatabaseConnection, args: ItemUpsertArgs<'_>) -> Result<item::Model> {
     let ty_norm = args.ty.to_lowercase();
     let now = now_ms();
     let am = item::ActiveModel {
@@ -503,10 +500,7 @@ pub async fn update_item_media(
 /// index case-insensitive so "Anime" / "anime" collapse to one row
 /// (first-seen casing wins). Returns models for every input name in
 /// arbitrary order, deduped.
-pub async fn upsert_tags(
-    db: &DatabaseConnection,
-    names: &[String],
-) -> Result<Vec<tag::Model>> {
+pub async fn upsert_tags(db: &DatabaseConnection, names: &[String]) -> Result<Vec<tag::Model>> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut unique_inputs: Vec<&str> = Vec::new();
     for n in names {
@@ -580,10 +574,7 @@ pub async fn list_tags(db: &DatabaseConnection) -> Result<Vec<tag::Model>> {
         .context("select tags")
 }
 
-pub async fn list_items_by_tag(
-    db: &DatabaseConnection,
-    tag_id: i64,
-) -> Result<Vec<item::Model>> {
+pub async fn list_items_by_tag(db: &DatabaseConnection, tag_id: i64) -> Result<Vec<item::Model>> {
     item::Entity::find()
         .inner_join(item_tag::Entity)
         .filter(item_tag::Column::TagId.eq(tag_id))
@@ -593,10 +584,7 @@ pub async fn list_items_by_tag(
         .with_context(|| format!("select items by tag={tag_id}"))
 }
 
-pub async fn list_tags_of_item(
-    db: &DatabaseConnection,
-    item_id: i64,
-) -> Result<Vec<tag::Model>> {
+pub async fn list_tags_of_item(db: &DatabaseConnection, item_id: i64) -> Result<Vec<tag::Model>> {
     tag::Entity::find()
         .inner_join(item_tag::Entity)
         .filter(item_tag::Column::ItemId.eq(item_id))
@@ -700,10 +688,7 @@ pub async fn list_playlists(db: &DatabaseConnection) -> Result<Vec<playlist::Mod
         .context("select playlists")
 }
 
-pub async fn find_playlist(
-    db: &DatabaseConnection,
-    id: i64,
-) -> Result<Option<playlist::Model>> {
+pub async fn find_playlist(db: &DatabaseConnection, id: i64) -> Result<Option<playlist::Model>> {
     playlist::Entity::find_by_id(id)
         .one(db)
         .await
@@ -724,11 +709,7 @@ pub async fn rename_playlist(db: &DatabaseConnection, id: i64, name: &str) -> Re
     Ok(())
 }
 
-pub async fn set_playlist_mode(
-    db: &DatabaseConnection,
-    id: i64,
-    mode: &str,
-) -> Result<()> {
+pub async fn set_playlist_mode(db: &DatabaseConnection, id: i64, mode: &str) -> Result<()> {
     let existing = find_playlist(db, id)
         .await?
         .ok_or_else(|| Error::PlaylistNotFound(format!("id={id}")))?;
@@ -786,11 +767,7 @@ pub async fn set_playlist_filter(
     Ok(())
 }
 
-pub async fn set_playlist_shuffle_seed(
-    db: &DatabaseConnection,
-    id: i64,
-    seed: i64,
-) -> Result<()> {
+pub async fn set_playlist_shuffle_seed(db: &DatabaseConnection, id: i64, seed: i64) -> Result<()> {
     let existing = find_playlist(db, id)
         .await?
         .ok_or_else(|| Error::PlaylistNotFound(format!("id={id}")))?;
@@ -806,11 +783,7 @@ pub async fn set_playlist_shuffle_seed(
 /// Replace the full ordered member list of a curated playlist.
 /// Position is the input index (0-based). Errors if the playlist is
 /// smart. Atomic via DELETE-then-INSERT inside a single transaction.
-pub async fn set_playlist_items(
-    db: &DatabaseConnection,
-    id: i64,
-    item_ids: &[i64],
-) -> Result<()> {
+pub async fn set_playlist_items(db: &DatabaseConnection, id: i64, item_ids: &[i64]) -> Result<()> {
     let existing = find_playlist(db, id)
         .await?
         .ok_or_else(|| Error::PlaylistNotFound(format!("id={id}")))?;
@@ -863,10 +836,7 @@ pub async fn set_playlist_items(
 
 /// Member item ids for a curated playlist, ordered by `position`.
 /// Smart playlists return `Ok(vec![])`.
-pub async fn list_playlist_item_ids(
-    db: &DatabaseConnection,
-    id: i64,
-) -> Result<Vec<i64>> {
+pub async fn list_playlist_item_ids(db: &DatabaseConnection, id: i64) -> Result<Vec<i64>> {
     let rows = playlist_item::Entity::find()
         .filter(playlist_item::Column::PlaylistId.eq(id))
         .order_by_asc(playlist_item::Column::Position)
@@ -1067,7 +1037,12 @@ mod tests {
         let db = mem_db().await;
         let tags = upsert_tags(
             &db,
-            &["Anime".into(), "anime".into(), "Landscape".into(), "ANIME".into()],
+            &[
+                "Anime".into(),
+                "anime".into(),
+                "Landscape".into(),
+                "ANIME".into(),
+            ],
         )
         .await
         .unwrap();
@@ -1105,7 +1080,9 @@ mod tests {
             .unwrap();
         assert_eq!(list_tags_of_item(&db, item.id).await.unwrap().len(), 2);
 
-        replace_item_tags(&db, item.id, &[ids["Game"]]).await.unwrap();
+        replace_item_tags(&db, item.id, &[ids["Game"]])
+            .await
+            .unwrap();
         let after = list_tags_of_item(&db, item.id).await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].name, "Game");
@@ -1138,7 +1115,9 @@ mod tests {
             .await
             .unwrap();
         let tags = upsert_tags(&db, &["Anime".into()]).await.unwrap();
-        replace_item_tags(&db, item.id, &[tags[0].id]).await.unwrap();
+        replace_item_tags(&db, item.id, &[tags[0].id])
+            .await
+            .unwrap();
 
         remove_library(&db, lib.id).await.unwrap();
         assert!(list_items_by_tag(&db, tags[0].id).await.unwrap().is_empty());
@@ -1243,11 +1222,9 @@ mod tests {
             .unwrap();
         // SQLite UNIQUE COLLATE NOCASE on name → insertion of any
         // case-equivalent must fail.
-        assert!(
-            create_playlist(&db, PlaylistCreateArgs::curated("ANIME"))
-                .await
-                .is_err()
-        );
+        assert!(create_playlist(&db, PlaylistCreateArgs::curated("ANIME"))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1312,10 +1289,19 @@ mod tests {
             .await
             .unwrap();
         // Insert with a duplicate to exercise dedup; expect [c, a, b, d].
-        let input = vec![item_ids[2], item_ids[0], item_ids[1], item_ids[2], item_ids[3]];
+        let input = vec![
+            item_ids[2],
+            item_ids[0],
+            item_ids[1],
+            item_ids[2],
+            item_ids[3],
+        ];
         set_playlist_items(&db, pl.id, &input).await.unwrap();
         let got = list_playlist_item_ids(&db, pl.id).await.unwrap();
-        assert_eq!(got, vec![item_ids[2], item_ids[0], item_ids[1], item_ids[3]]);
+        assert_eq!(
+            got,
+            vec![item_ids[2], item_ids[0], item_ids[1], item_ids[3]]
+        );
 
         // Replace with a shorter list — old rows must be wiped.
         set_playlist_items(&db, pl.id, &[item_ids[1]])
@@ -1360,7 +1346,9 @@ mod tests {
         let pl = create_playlist(&db, PlaylistCreateArgs::curated("Pl"))
             .await
             .unwrap();
-        set_playlist_items(&db, pl.id, &[i1.id, i2.id]).await.unwrap();
+        set_playlist_items(&db, pl.id, &[i1.id, i2.id])
+            .await
+            .unwrap();
         // Drop the library — both items cascade away, member rows
         // should follow.
         remove_library(&db, lib.id).await.unwrap();
@@ -1379,7 +1367,9 @@ mod tests {
             .await
             .unwrap();
         let keep_set: HashSet<String> = ["/keep".to_owned()].into_iter().collect();
-        let deleted = delete_libraries_missing(&db, p.id, &keep_set).await.unwrap();
+        let deleted = delete_libraries_missing(&db, p.id, &keep_set)
+            .await
+            .unwrap();
         assert_eq!(deleted, 1);
         let remaining = list_libraries_by_plugin(&db, p.id).await.unwrap();
         assert_eq!(remaining.len(), 1);

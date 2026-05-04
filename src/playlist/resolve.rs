@@ -142,10 +142,7 @@ pub async fn activate(
         let blob = row.filter_json.as_deref().ok_or_else(|| {
             Error::PlaylistInvalid(format!("smart playlist id={id} missing filter_json"))
         })?;
-        Some(
-            Filter::from_json(blob)
-                .with_context(|| format!("decode filter_json id={id}"))?,
-        )
+        Some(Filter::from_json(blob).with_context(|| format!("decode filter_json id={id}"))?)
     } else {
         None
     };
@@ -283,10 +280,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_all_returns_snapshot_ids_in_order() {
         let db = mem_db().await;
-        let snapshot = vec![
-            entry("e1", "/lib", "a.png"),
-            entry("e2", "/lib", "b.png"),
-        ];
+        let snapshot = vec![entry("e1", "/lib", "a.png"), entry("e2", "/lib", "b.png")];
         let state = PlaylistState::default();
         let ids = resolve_active(&db, &snapshot, &state).await.unwrap();
         assert_eq!(ids, vec!["e1".to_string(), "e2".to_string()]);
@@ -338,7 +332,10 @@ mod tests {
         let mut state = PlaylistState::default();
         state.set_active(Some(pl.id), None);
         let ids = resolve_active(&db, &snapshot, &state).await.unwrap();
-        assert_eq!(ids, vec!["e_c".to_string(), "e_a".to_string(), "e_b".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["e_c".to_string(), "e_a".to_string(), "e_b".to_string()]
+        );
     }
 
     #[tokio::test]

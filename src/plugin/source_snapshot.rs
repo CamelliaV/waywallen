@@ -98,7 +98,11 @@ mod tests {
     fn install_indexes_entries() {
         let mut snap = SourceSnapshot::default();
         snap.install(
-            vec![entry("a", "image"), entry("b", "image"), entry("c", "scene")],
+            vec![
+                entry("a", "image"),
+                entry("b", "image"),
+                entry("c", "scene"),
+            ],
             vec![],
         );
         assert_eq!(snap.len(), 3);

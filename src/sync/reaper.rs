@@ -221,9 +221,7 @@ fn ensure_producer_handle(
             true
         }
         Err(e) => {
-            log::warn!(
-                "reaper {renderer_id}: DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE failed: {e}"
-            );
+            log::warn!("reaper {renderer_id}: DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE failed: {e}");
             false
         }
     }
@@ -241,7 +239,13 @@ async fn advance_release_point(
     producer_handle: &mut Option<SyncobjHandle>,
     release_point: u64,
 ) {
-    if !ensure_producer_handle(drm, renderer_id, release_syncobj, producer_handle, release_point) {
+    if !ensure_producer_handle(
+        drm,
+        renderer_id,
+        release_syncobj,
+        producer_handle,
+        release_point,
+    ) {
         return;
     }
     let producer = producer_handle.as_ref().expect("set above");
@@ -256,15 +260,11 @@ async fn advance_release_point(
         }
     };
     if let Err(e) = drm.signal(&placeholder) {
-        log::warn!(
-            "reaper {renderer_id}: advance point {release_point}: SIGNAL: {e}"
-        );
+        log::warn!("reaper {renderer_id}: advance point {release_point}: SIGNAL: {e}");
         return;
     }
     if let Err(e) = drm.transfer(&placeholder, 0, producer, release_point) {
-        log::warn!(
-            "reaper {renderer_id}: advance point {release_point}: TRANSFER: {e}"
-        );
+        log::warn!("reaper {renderer_id}: advance point {release_point}: TRANSFER: {e}");
     }
     // `placeholder` drops here → DESTROY ioctl. Producer timeline
     // already holds the signaled fence via TRANSFER, so this is safe.
@@ -286,7 +286,13 @@ async fn flush_bucket(
         return;
     }
 
-    if !ensure_producer_handle(drm, renderer_id, release_syncobj, producer_handle, release_point) {
+    if !ensure_producer_handle(
+        drm,
+        renderer_id,
+        release_syncobj,
+        producer_handle,
+        release_point,
+    ) {
         return;
     }
     let producer = producer_handle.as_ref().expect("set above");
@@ -344,13 +350,9 @@ async fn flush_bucket(
     let n = handles.len();
     if n == 1 {
         if let Err(e) = drm.transfer(&handles[0], 0, producer, release_point) {
-            log::warn!(
-                "reaper {renderer_id}: TRANSFER to point {release_point} failed: {e}"
-            );
+            log::warn!("reaper {renderer_id}: TRANSFER to point {release_point} failed: {e}");
         } else {
-            log::trace!(
-                "reaper {renderer_id}: flushed point {release_point} (1 consumer)"
-            );
+            log::trace!("reaper {renderer_id}: flushed point {release_point} (1 consumer)");
         }
         drop(handles);
         return;
@@ -413,21 +415,15 @@ async fn flush_bucket(
         }
     };
     if let Err(e) = drm.import_sync_file(&temp_handle, &merged) {
-        log::warn!(
-            "reaper {renderer_id}: IMPORT_SYNC_FILE for point {release_point} failed: {e}"
-        );
+        log::warn!("reaper {renderer_id}: IMPORT_SYNC_FILE for point {release_point} failed: {e}");
         drop(handles);
         return;
     }
     if let Err(e) = drm.transfer(&temp_handle, 0, producer, release_point) {
-        log::warn!(
-            "reaper {renderer_id}: TRANSFER (merged) to point {release_point} failed: {e}"
-        );
+        log::warn!("reaper {renderer_id}: TRANSFER (merged) to point {release_point} failed: {e}");
         return;
     }
-    log::trace!(
-        "reaper {renderer_id}: flushed point {release_point} ({n} consumer fences merged)"
-    );
+    log::trace!("reaper {renderer_id}: flushed point {release_point} ({n} consumer fences merged)");
     // temp_handle, merged sync_file, and consumer handles all drop
     // here → kernel cleanup. The producer-side timeline holds the
     // merged fence (already signaled, since wait_all returned Ok).

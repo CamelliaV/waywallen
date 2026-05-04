@@ -41,7 +41,10 @@ pub struct ModCap {
 fn fourcc_str(fourcc: u32) -> String {
     let b = fourcc.to_le_bytes();
     if b.iter().all(|&c| (0x20..=0x7e).contains(&c)) {
-        format!("'{}{}{}{}'", b[0] as char, b[1] as char, b[2] as char, b[3] as char)
+        format!(
+            "'{}{}{}{}'",
+            b[0] as char, b[1] as char, b[2] as char, b[3] as char
+        )
     } else {
         format!("0x{fourcc:08x}")
     }
@@ -203,10 +206,14 @@ pub enum MemSource {
 }
 
 impl PathCategory {
-    pub fn as_u32(self) -> u32 { self as u32 }
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 impl MemSource {
-    pub fn as_u32(self) -> u32 { self as u32 }
+    pub fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 /// Resolved scheme that both peers will use until the next
@@ -391,11 +398,8 @@ fn pack_uuid_words(words: &[u32]) -> [u8; 16] {
 // ---------------------------------------------------------------------------
 
 /// Color sub-axis masks for per-axis intersection.
-const COLOR_MASK_ENCODING: u32 = COLOR_ENC_SRGB
-    | COLOR_ENC_LINEAR
-    | COLOR_ENC_BT601
-    | COLOR_ENC_BT709
-    | COLOR_ENC_BT2020;
+const COLOR_MASK_ENCODING: u32 =
+    COLOR_ENC_SRGB | COLOR_ENC_LINEAR | COLOR_ENC_BT601 | COLOR_ENC_BT709 | COLOR_ENC_BT2020;
 const COLOR_MASK_RANGE: u32 = COLOR_RANGE_FULL | COLOR_RANGE_LIMITED;
 const COLOR_MASK_ALPHA: u32 = COLOR_ALPHA_PREMUL | COLOR_ALPHA_STRAIGHT;
 
@@ -430,18 +434,17 @@ const DEFAULT_POOL_COUNT: u32 = 3;
 /// preferring DEVICE_LOCAL when available. Cross-device emits 0; the
 /// bridge's compat-linear path picks any dma-buf-exportable memory
 /// type without consulting this field.
-pub fn pick(
-    producer: &PeerCaps,
-    consumer: &PeerCaps,
-) -> Result<NegotiatedScheme, NegotiateError> {
+pub fn pick(producer: &PeerCaps, consumer: &PeerCaps) -> Result<NegotiatedScheme, NegotiateError> {
     let same_dev = producer.identity.same_device(&consumer.identity);
     let sync_mode = pick_sync(producer.sync, consumer.sync)?;
     let color = pick_color(producer.color, consumer.color);
 
     if same_dev {
         let (fourcc, modifier, plane_count) = pick_format_same_device(
-            &producer.formats, &consumer.formats,
-            &producer.blacklist, &consumer.blacklist,
+            &producer.formats,
+            &consumer.formats,
+            &producer.blacklist,
+            &consumer.blacklist,
         )?;
         // LINEAR within the same-device intersection means every
         // tile modifier was either absent or blacklisted — fall to
@@ -454,15 +457,24 @@ pub fn pick(
         };
         let mem_hint = pick_mem_hint_same_dev(producer.mem_hint, consumer.mem_hint);
         return Ok(NegotiatedScheme {
-            fourcc, modifier, plane_count, sync_mode, color, mem_hint,
-            count: DEFAULT_POOL_COUNT, path, mem_source,
+            fourcc,
+            modifier,
+            plane_count,
+            sync_mode,
+            color,
+            mem_hint,
+            count: DEFAULT_POOL_COUNT,
+            path,
+            mem_source,
         });
     }
 
     // Cross-device — fourcc-only match, force LINEAR.
     let fourcc = pick_fourcc_only(
-        &producer.formats, &consumer.formats,
-        &producer.blacklist, &consumer.blacklist,
+        &producer.formats,
+        &consumer.formats,
+        &producer.blacklist,
+        &consumer.blacklist,
     )?;
     Ok(NegotiatedScheme {
         fourcc,
@@ -771,10 +783,7 @@ mod tests {
         .unwrap();
         assert_eq!(caps.identity.device_uuid[0], 0xAA);
         // word 2 = 0xCAFE_BABE → bytes 8..12 = [0xBE, 0xBA, 0xFE, 0xCA] (LE)
-        assert_eq!(
-            &caps.identity.driver_uuid[8..12],
-            &[0xBE, 0xBA, 0xFE, 0xCA]
-        );
+        assert_eq!(&caps.identity.driver_uuid[8..12], &[0xBE, 0xBA, 0xFE, 0xCA]);
     }
 
     #[test]
@@ -791,18 +800,27 @@ mod tests {
         let a = DeviceIdentity {
             device_uuid: [0; 16],
             driver_uuid: [0; 16],
-            drm: DrmNode { major: 226, minor: 128 },
+            drm: DrmNode {
+                major: 226,
+                minor: 128,
+            },
         };
         let b = DeviceIdentity {
             device_uuid: [0; 16],
             driver_uuid: [0; 16],
-            drm: DrmNode { major: 226, minor: 128 },
+            drm: DrmNode {
+                major: 226,
+                minor: 128,
+            },
         };
         assert!(a.same_device(&b));
         let c = DeviceIdentity {
             device_uuid: [0; 16],
             driver_uuid: [0; 16],
-            drm: DrmNode { major: 226, minor: 129 },
+            drm: DrmNode {
+                major: 226,
+                minor: 129,
+            },
         };
         assert!(!a.same_device(&c));
     }
@@ -812,12 +830,18 @@ mod tests {
         let mut a = DeviceIdentity {
             device_uuid: [0x42; 16],
             driver_uuid: [0; 16],
-            drm: DrmNode { major: 226, minor: 128 },
+            drm: DrmNode {
+                major: 226,
+                minor: 128,
+            },
         };
         let b = DeviceIdentity {
             device_uuid: [0x42; 16],
             driver_uuid: [0; 16],
-            drm: DrmNode { major: 226, minor: 129 },
+            drm: DrmNode {
+                major: 226,
+                minor: 129,
+            },
         };
         assert!(a.same_device(&b));
         // also: differing UUID is not same_device even if DRM matches.
@@ -825,7 +849,10 @@ mod tests {
         let c = DeviceIdentity {
             device_uuid: [0x99; 16],
             driver_uuid: [0; 16],
-            drm: DrmNode { major: 226, minor: 128 },
+            drm: DrmNode {
+                major: 226,
+                minor: 128,
+            },
         };
         assert!(!a.same_device(&c));
     }
@@ -875,7 +902,10 @@ mod tests {
         DeviceIdentity {
             device_uuid: [byte; 16],
             driver_uuid: [byte; 16],
-            drm: DrmNode { major: 226, minor: 128 },
+            drm: DrmNode {
+                major: 226,
+                minor: 128,
+            },
         }
     }
 
@@ -887,7 +917,10 @@ mod tests {
         DeviceIdentity {
             device_uuid: [device_byte; 16],
             driver_uuid: [driver_byte; 16],
-            drm: DrmNode { major: 226, minor: drm_minor },
+            drm: DrmNode {
+                major: 226,
+                minor: drm_minor,
+            },
         }
     }
 
@@ -1061,10 +1094,7 @@ mod tests {
     /// Build a PeerCaps with multiple fourccs, each carrying a list of
     /// (modifier, plane_count). Used by the cross-device fourcc-only
     /// tests below.
-    fn caps_multi_fourcc(
-        entries: &[(u32, &[(u64, u32)])],
-        identity: DeviceIdentity,
-    ) -> PeerCaps {
+    fn caps_multi_fourcc(entries: &[(u32, &[(u64, u32)])], identity: DeviceIdentity) -> PeerCaps {
         let fourccs: Vec<u32> = entries.iter().map(|(f, _)| *f).collect();
         let mod_counts: Vec<u32> = entries.iter().map(|(_, m)| m.len() as u32).collect();
         let mut modifiers: Vec<u64> = Vec::new();
@@ -1184,7 +1214,8 @@ mod tests {
             ],
             ident_uuid(0xBB),
         );
-        p.blacklist.insert((DRM_FORMAT_ABGR8888, DRM_FORMAT_MOD_LINEAR));
+        p.blacklist
+            .insert((DRM_FORMAT_ABGR8888, DRM_FORMAT_MOD_LINEAR));
         let s = pick(&p, &c).unwrap();
         assert_eq!(s.fourcc, DRM_FORMAT_XRGB8888);
         assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
@@ -1200,7 +1231,10 @@ mod tests {
             DeviceIdentity {
                 device_uuid: [0; 16],
                 driver_uuid: [0; 16],
-                drm: DrmNode { major: 226, minor: 128 },
+                drm: DrmNode {
+                    major: 226,
+                    minor: 128,
+                },
             },
             SYNC_SYNCOBJ_TIMELINE,
             DEFAULT_COLOR,
@@ -1212,7 +1246,10 @@ mod tests {
             DeviceIdentity {
                 device_uuid: [0; 16],
                 driver_uuid: [0; 16],
-                drm: DrmNode { major: 226, minor: 130 },
+                drm: DrmNode {
+                    major: 226,
+                    minor: 130,
+                },
             },
             SYNC_SYNCOBJ_TIMELINE,
             DEFAULT_COLOR,

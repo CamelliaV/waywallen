@@ -122,19 +122,13 @@ impl Filter {
 
     /// Evaluate against a single entry.
     pub fn matches(&self, e: &WallpaperEntry) -> bool {
-        if !self.wp_types.is_empty()
-            && !self.wp_types.iter().any(|t| eq_ci(t, &e.wp_type))
-        {
+        if !self.wp_types.is_empty() && !self.wp_types.iter().any(|t| eq_ci(t, &e.wp_type)) {
             return false;
         }
 
         if !self.libraries.is_empty() {
             let lib = trim_trailing_slash(&e.library_root);
-            if !self
-                .libraries
-                .iter()
-                .any(|l| trim_trailing_slash(l) == lib)
-            {
+            if !self.libraries.iter().any(|l| trim_trailing_slash(l) == lib) {
                 return false;
             }
         }

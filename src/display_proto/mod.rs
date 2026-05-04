@@ -18,8 +18,8 @@ pub mod generated {
 pub mod codec;
 
 pub use codec::{
-    recv_event, recv_request, send_event, send_request, CodecError, CodecResult,
-    MAX_BODY_BYTES, MAX_FDS_PER_MSG,
+    recv_event, recv_request, send_event, send_request, CodecError, CodecResult, MAX_BODY_BYTES,
+    MAX_FDS_PER_MSG,
 };
 pub use generated::{opcode, DecodeError, Event, Rect, Request, PROTOCOL_NAME, PROTOCOL_VERSION};
 
@@ -135,8 +135,18 @@ mod tests {
     fn event_set_config_roundtrip() {
         roundtrip_evt(Event::SetConfig {
             config_generation: 7,
-            source_rect: Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 },
-            dest_rect: Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 },
+            source_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 1080.0,
+            },
+            dest_rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1920.0,
+                h: 1080.0,
+            },
             transform: 0,
             clear_r: 0.0,
             clear_g: 0.0,

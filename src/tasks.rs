@@ -110,8 +110,16 @@ type BoxedResultFut = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>
 type BoxedResultFn = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 
 enum TaskMsg {
-    Async { id: TaskId, name: String, fut: BoxedResultFut },
-    Blocking { id: TaskId, name: String, func: BoxedResultFn },
+    Async {
+        id: TaskId,
+        name: String,
+        fut: BoxedResultFut,
+    },
+    Blocking {
+        id: TaskId,
+        name: String,
+        func: BoxedResultFn,
+    },
 }
 
 pub struct TaskManager {
@@ -170,12 +178,7 @@ impl TaskManager {
     /// callers can correlate their submission with later events / logs.
     /// The task is wrapped in a `select!` against a per-task
     /// `CancellationToken`; calling [`cancel`](Self::cancel) flips it.
-    pub fn spawn_async<F>(
-        &self,
-        kind: TaskKind,
-        name: impl Into<String>,
-        fut: F,
-    ) -> TaskId
+    pub fn spawn_async<F>(&self, kind: TaskKind, name: impl Into<String>, fut: F) -> TaskId
     where
         F: Future<Output = Result<()>> + Send + 'static,
     {
@@ -258,12 +261,7 @@ impl TaskManager {
     }
 
     /// Submit a blocking task. Runs on the Tokio blocking pool.
-    pub fn spawn_blocking<F>(
-        &self,
-        kind: TaskKind,
-        name: impl Into<String>,
-        func: F,
-    ) -> TaskId
+    pub fn spawn_blocking<F>(&self, kind: TaskKind, name: impl Into<String>, func: F) -> TaskId
     where
         F: FnOnce() -> Result<()> + Send + 'static,
     {
@@ -561,15 +559,11 @@ mod tests {
         let tm = TaskManager::spawn(rx);
         let finished = Arc::new(AtomicU32::new(0));
         let f = finished.clone();
-        tm.spawn_async(
-            TaskKind::Generic,
-            "unit/long-sleeper",
-            async move {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                f.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        );
+        tm.spawn_async(TaskKind::Generic, "unit/long-sleeper", async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            f.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
         tokio::time::sleep(Duration::from_millis(20)).await;
         let _ = tx.send(true);
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -586,7 +580,9 @@ mod tests {
 
         // Immediately after submit, the task should appear in list() as Running.
         let snap = tm.list();
-        assert!(snap.iter().any(|r| r.id == id && matches!(r.state, TaskState::Running)));
+        assert!(snap
+            .iter()
+            .any(|r| r.id == id && matches!(r.state, TaskState::Running)));
 
         // Started event fires synchronously during spawn_async.
         match tokio::time::timeout(Duration::from_millis(100), events.recv())
@@ -605,10 +601,16 @@ mod tests {
             other => panic!("expected Completed, got {other:?}"),
         }
 
-        assert!(wait_for(
-            || tm.list().iter().any(|r| r.id == id && matches!(r.state, TaskState::Completed)),
-            Duration::from_secs(1)
-        ).await);
+        assert!(
+            wait_for(
+                || tm
+                    .list()
+                    .iter()
+                    .any(|r| r.id == id && matches!(r.state, TaskState::Completed)),
+                Duration::from_secs(1)
+            )
+            .await
+        );
 
         let _ = tx.send(true);
     }
@@ -642,18 +644,22 @@ mod tests {
 
         // Final state observed by list() must stay Cancelled, not flip
         // to Failed when the wrapper future returns Err("cancelled").
-        assert!(wait_for(
-            || tm
-                .list()
-                .iter()
-                .any(|r| r.id == id && matches!(r.state, TaskState::Cancelled)),
-            Duration::from_secs(1)
-        )
-        .await);
+        assert!(
+            wait_for(
+                || tm
+                    .list()
+                    .iter()
+                    .any(|r| r.id == id && matches!(r.state, TaskState::Cancelled)),
+                Duration::from_secs(1)
+            )
+            .await
+        );
 
         // Cancel-token entry should be GC'd after handle_join runs.
-        assert!(wait_for(|| !tm.cancel(id), Duration::from_secs(1)).await,
-            "cancel token leaked");
+        assert!(
+            wait_for(|| !tm.cancel(id), Duration::from_secs(1)).await,
+            "cancel token leaked"
+        );
         let _ = tx.send(true);
     }
 
@@ -683,17 +689,19 @@ mod tests {
         assert_ne!(first, second);
 
         // First should end up Cancelled, second Completed.
-        assert!(wait_for(
-            || {
-                let snap = tm.list();
-                let f = snap.iter().find(|r| r.id == first);
-                let s = snap.iter().find(|r| r.id == second);
-                matches!(f.map(|r| &r.state), Some(TaskState::Cancelled))
-                    && matches!(s.map(|r| &r.state), Some(TaskState::Completed))
-            },
-            Duration::from_secs(1)
-        )
-        .await);
+        assert!(
+            wait_for(
+                || {
+                    let snap = tm.list();
+                    let f = snap.iter().find(|r| r.id == first);
+                    let s = snap.iter().find(|r| r.id == second);
+                    matches!(f.map(|r| &r.state), Some(TaskState::Cancelled))
+                        && matches!(s.map(|r| &r.state), Some(TaskState::Completed))
+                },
+                Duration::from_secs(1)
+            )
+            .await
+        );
         let _ = tx.send(true);
     }
 
@@ -703,11 +711,9 @@ mod tests {
         let tm = TaskManager::spawn(rx);
         let mut events = tm.subscribe();
 
-        let id = tm.spawn_async(
-            TaskKind::Generic,
-            "unit/failing",
-            async move { anyhow::bail!("nope") },
-        );
+        let id = tm.spawn_async(TaskKind::Generic, "unit/failing", async move {
+            anyhow::bail!("nope")
+        });
 
         // Drain Started.
         let _ = tokio::time::timeout(Duration::from_millis(100), events.recv()).await;

@@ -54,8 +54,7 @@ fn parse_args() -> Result<Args, String> {
 
 fn write_out(path: &PathBuf, code: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     fs::write(path, code).map_err(|e| format!("write {}: {e}", path.display()))
 }

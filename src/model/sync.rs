@@ -220,7 +220,12 @@ mod tests {
     async fn first_sync_groups_by_root_and_strips_prefix() {
         let db = mem_db().await;
         let entries = [
-            entry("image", "/home/u/Pictures", "/home/u/Pictures/a.png", "image"),
+            entry(
+                "image",
+                "/home/u/Pictures",
+                "/home/u/Pictures/a.png",
+                "image",
+            ),
             entry(
                 "image",
                 "/home/u/Pictures",
@@ -231,7 +236,10 @@ mod tests {
         ];
         let (summary, _) = sync_plugin_entries(
             &db,
-            PluginRef { name: "image", version: "0.1" },
+            PluginRef {
+                name: "image",
+                version: "0.1",
+            },
             &entries,
             &[],
         )
@@ -240,8 +248,13 @@ mod tests {
         assert_eq!(summary.items_upserted, 3);
         assert_eq!(summary.dropped, 0);
 
-        let plugin = repo::find_plugin_by_name(&db, "image").await.unwrap().unwrap();
-        let libs = repo::list_libraries_by_plugin(&db, plugin.id).await.unwrap();
+        let plugin = repo::find_plugin_by_name(&db, "image")
+            .await
+            .unwrap()
+            .unwrap();
+        let libs = repo::list_libraries_by_plugin(&db, plugin.id)
+            .await
+            .unwrap();
         let home_lib = libs.iter().find(|l| l.path == "/home/u/Pictures").unwrap();
         let items = repo::list_items_by_library(&db, home_lib.id).await.unwrap();
         let paths: Vec<_> = items.iter().map(|i| i.path.as_str()).collect();
@@ -253,9 +266,17 @@ mod tests {
         let db = mem_db().await;
         let mut e = entry("p", "/ws", "/ws/12345/scene.pkg", "scene");
         e.preview = Some("/ws/12345/preview.gif".into());
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[e], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[e],
+            &[],
+        )
+        .await
+        .unwrap();
         let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
         assert_eq!(items[0].path, "12345/scene.pkg");
@@ -267,9 +288,17 @@ mod tests {
         let db = mem_db().await;
         let mut e = entry("p", "/root", "/root/a.png", "image");
         e.preview = Some("/elsewhere/thumb.png".into());
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[e], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[e],
+            &[],
+        )
+        .await
+        .unwrap();
         let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
         assert!(items[0].preview_path.is_none());
@@ -282,9 +311,17 @@ mod tests {
             entry("p", "/root", "/root/ok.png", "image"),
             entry("p", "/root", "/elsewhere/bad.png", "image"),
         ];
-        let (summary, _) = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &entries, &[])
-                .await
-                .unwrap();
+        let (summary, _) = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &entries,
+            &[],
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.items_upserted, 1);
         assert_eq!(summary.dropped, 1);
     }
@@ -293,11 +330,21 @@ mod tests {
     async fn type_is_normalized_lowercase() {
         let db = mem_db().await;
         let entries = [entry("p", "/r", "/r/a.png", "Scene")];
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &entries, &[])
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &entries,
+            &[],
+        )
+        .await
+        .unwrap();
+        let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
+        let libs = repo::list_libraries_by_plugin(&db, plugin.id)
             .await
             .unwrap();
-        let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
-        let libs = repo::list_libraries_by_plugin(&db, plugin.id).await.unwrap();
         let items = repo::list_items_by_library(&db, libs[0].id).await.unwrap();
         assert_eq!(items[0].ty, "scene");
     }
@@ -324,15 +371,20 @@ mod tests {
         };
         let _ = sync_plugin_entries(
             &db,
-            PluginRef { name: "wallpaper_engine", version: "0.2.0" },
+            PluginRef {
+                name: "wallpaper_engine",
+                version: "0.2.0",
+            },
             &[we],
             &[],
         )
         .await
         .unwrap();
 
-        let plugin =
-            repo::find_plugin_by_name(&db, "wallpaper_engine").await.unwrap().unwrap();
+        let plugin = repo::find_plugin_by_name(&db, "wallpaper_engine")
+            .await
+            .unwrap()
+            .unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
         let it = &items[0];
         assert_eq!(it.path, "12345/scene.pkg");
@@ -352,10 +404,22 @@ mod tests {
             e.tags = vec![tag.to_owned()];
             e
         };
-        let entries = [mk("a.png", "Anime"), mk("b.png", "anime"), mk("c.png", "ANIME")];
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &entries, &[])
-            .await
-            .unwrap();
+        let entries = [
+            mk("a.png", "Anime"),
+            mk("b.png", "anime"),
+            mk("c.png", "ANIME"),
+        ];
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &entries,
+            &[],
+        )
+        .await
+        .unwrap();
         assert_eq!(repo::list_tags(&db).await.unwrap().len(), 1);
     }
 
@@ -364,15 +428,31 @@ mod tests {
         let db = mem_db().await;
         let mut first = entry("p", "/r", "/r/a.png", "image");
         first.tags = vec!["Anime".into(), "Nature".into()];
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[first], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[first],
+            &[],
+        )
+        .await
+        .unwrap();
 
         let mut second = entry("p", "/r", "/r/a.png", "image");
         second.tags = vec!["Game".into()];
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[second], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[second],
+            &[],
+        )
+        .await
+        .unwrap();
 
         let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
@@ -389,14 +469,30 @@ mod tests {
             entry("p", "/a", "/a/y.png", "image"),
             entry("p", "/b", "/b/z.png", "image"),
         ];
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "1" }, &first, &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "1",
+            },
+            &first,
+            &[],
+        )
+        .await
+        .unwrap();
 
         let second = [entry("p", "/a", "/a/x.png", "image")];
-        let (summary, _) = sync_plugin_entries(&db, PluginRef { name: "p", version: "1" }, &second, &[])
-                .await
-                .unwrap();
+        let (summary, _) = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "1",
+            },
+            &second,
+            &[],
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.items_upserted, 1);
         assert_eq!(summary.items_deleted, 1);
         assert_eq!(summary.libraries_deleted, 1);
@@ -407,15 +503,26 @@ mod tests {
         let db = mem_db().await;
         let _ = sync_plugin_entries(
             &db,
-            PluginRef { name: "p", version: "" },
+            PluginRef {
+                name: "p",
+                version: "",
+            },
             &[entry("p", "/one", "/one/x.png", "image")],
             &[],
         )
         .await
         .unwrap();
-        let (summary, _) = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[], &[])
-                .await
-                .unwrap();
+        let (summary, _) = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
         assert_eq!(summary.libraries_deleted, 1);
     }
 
@@ -423,9 +530,17 @@ mod tests {
     async fn media_meta_remains_null_when_entry_lacks_it() {
         let db = mem_db().await;
         let e = entry("p", "/r", "/r/a.mp4", "video");
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[e], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[e],
+            &[],
+        )
+        .await
+        .unwrap();
         let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
         let it = &items[0];
@@ -445,9 +560,17 @@ mod tests {
         e.width = Some(1920);
         e.height = Some(1080);
         e.format = Some("matroska,webm".to_owned());
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[e], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[e],
+            &[],
+        )
+        .await
+        .unwrap();
         let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
         let it = &items[0];
@@ -461,9 +584,17 @@ mod tests {
     async fn first_insert_stamps_create_at_and_preserves_it_on_conflict() {
         let db = mem_db().await;
         let e = entry("p", "/r", "/r/a.png", "image");
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[e.clone()], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[e.clone()],
+            &[],
+        )
+        .await
+        .unwrap();
         let plugin = repo::find_plugin_by_name(&db, "p").await.unwrap().unwrap();
         let items = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
         let first_create = items[0].create_at;
@@ -473,11 +604,22 @@ mod tests {
         // Force the wall clock to advance so the second upsert sees a
         // strictly newer now_ms() than the first.
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        let _ = sync_plugin_entries(&db, PluginRef { name: "p", version: "" }, &[e], &[])
-            .await
-            .unwrap();
+        let _ = sync_plugin_entries(
+            &db,
+            PluginRef {
+                name: "p",
+                version: "",
+            },
+            &[e],
+            &[],
+        )
+        .await
+        .unwrap();
         let items2 = repo::list_items_by_plugin(&db, plugin.id).await.unwrap();
-        assert_eq!(items2[0].create_at, first_create, "create_at must be sticky");
+        assert_eq!(
+            items2[0].create_at, first_create,
+            "create_at must be sticky"
+        );
         assert!(items2[0].update_at >= first_update);
         assert!(items2[0].sync_at >= first_update);
     }

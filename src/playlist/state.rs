@@ -275,7 +275,11 @@ impl PlaylistState {
                     .map(|d| d.as_nanos() as u64)
                     .unwrap_or(0)
             };
-            self.rng = if seed == 0 { 0xdead_beef_cafe_babe } else { seed };
+            self.rng = if seed == 0 {
+                0xdead_beef_cafe_babe
+            } else {
+                seed
+            };
         }
         &mut self.rng
     }

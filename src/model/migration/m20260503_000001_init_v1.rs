@@ -212,11 +212,7 @@ impl MigrationTrait for Migration {
                     .if_not_exists()
                     .col(ColumnDef::new(ItemTag::ItemId).big_integer().not_null())
                     .col(ColumnDef::new(ItemTag::TagId).big_integer().not_null())
-                    .primary_key(
-                        Index::create()
-                            .col(ItemTag::ItemId)
-                            .col(ItemTag::TagId),
-                    )
+                    .primary_key(Index::create().col(ItemTag::ItemId).col(ItemTag::TagId))
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk_item_tag_item")
@@ -279,11 +275,7 @@ impl MigrationTrait for Migration {
                             .big_integer()
                             .not_null(),
                     )
-                    .col(
-                        ColumnDef::new(PlaylistItem::Position)
-                            .integer()
-                            .not_null(),
-                    )
+                    .col(ColumnDef::new(PlaylistItem::Position).integer().not_null())
                     .primary_key(
                         Index::create()
                             .col(PlaylistItem::PlaylistId)

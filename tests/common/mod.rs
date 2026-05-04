@@ -18,10 +18,7 @@ pub fn tmp_sock(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "waywallen-{tag}-{}-{ts}.sock",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("waywallen-{tag}-{}-{ts}.sock", std::process::id()))
 }
 
 /// RAII guard that unlinks the socket file on drop. Safe to hold for the
@@ -189,8 +186,9 @@ pub fn print_caps(bin: &Path) -> std::io::Result<PeerCapsSnapshot> {
     }
     let stdout = String::from_utf8(out.stdout)
         .map_err(|e| std::io::Error::other(format!("non-utf8 stdout: {e}")))?;
-    serde_json::from_str(&stdout)
-        .map_err(|e| std::io::Error::other(format!("parse caps json: {e}\n--- stdout ---\n{stdout}")))
+    serde_json::from_str(&stdout).map_err(|e| {
+        std::io::Error::other(format!("parse caps json: {e}\n--- stdout ---\n{stdout}"))
+    })
 }
 
 /// Compute the intersection of two cap snapshots: every `(fourcc,
@@ -209,10 +207,7 @@ pub fn intersect_caps(a: &PeerCapsSnapshot, b: &PeerCapsSnapshot) -> Vec<(u32, u
 /// and dump_display's `import_and_dump`. Returns `Ok(())` on byte
 /// equality. On mismatch returns the byte index of the first
 /// disagreement plus the values (useful in panic messages).
-pub fn compare_rgba8_dumps(
-    producer: &Path,
-    consumer: &Path,
-) -> std::io::Result<()> {
+pub fn compare_rgba8_dumps(producer: &Path, consumer: &Path) -> std::io::Result<()> {
     let a = std::fs::read(producer)?;
     let b = std::fs::read(consumer)?;
     if a.len() != b.len() {

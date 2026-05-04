@@ -57,8 +57,8 @@ pub struct DrmSyncobjTransfer {
 #[repr(C)]
 #[derive(Default, Copy, Clone, Debug)]
 pub struct DrmSyncobjWait {
-    pub handles: u64,        // userspace ptr to u32[count_handles]
-    pub timeout_nsec: i64,   // absolute CLOCK_MONOTONIC nsec; i64::MAX = forever
+    pub handles: u64,      // userspace ptr to u32[count_handles]
+    pub timeout_nsec: i64, // absolute CLOCK_MONOTONIC nsec; i64::MAX = forever
     pub count_handles: u32,
     pub flags: u32,
     pub first_signaled: u32,
@@ -71,18 +71,48 @@ pub const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT: u32 = 1 << 1;
 #[repr(C)]
 #[derive(Default, Copy, Clone, Debug)]
 pub struct DrmSyncobjArray {
-    pub handles: u64,        // userspace ptr to u32[count_handles]
+    pub handles: u64, // userspace ptr to u32[count_handles]
     pub count_handles: u32,
     pub pad: u32,
 }
 
-ioctl_readwrite!(drm_syncobj_create_ioctl, DRM_IOCTL_BASE, 0xBF, DrmSyncobjCreate);
-ioctl_readwrite!(drm_syncobj_destroy_ioctl, DRM_IOCTL_BASE, 0xC0, DrmSyncobjDestroy);
-ioctl_readwrite!(drm_syncobj_handle_to_fd_ioctl, DRM_IOCTL_BASE, 0xC1, DrmSyncobjHandle);
-ioctl_readwrite!(drm_syncobj_fd_to_handle_ioctl, DRM_IOCTL_BASE, 0xC2, DrmSyncobjHandle);
+ioctl_readwrite!(
+    drm_syncobj_create_ioctl,
+    DRM_IOCTL_BASE,
+    0xBF,
+    DrmSyncobjCreate
+);
+ioctl_readwrite!(
+    drm_syncobj_destroy_ioctl,
+    DRM_IOCTL_BASE,
+    0xC0,
+    DrmSyncobjDestroy
+);
+ioctl_readwrite!(
+    drm_syncobj_handle_to_fd_ioctl,
+    DRM_IOCTL_BASE,
+    0xC1,
+    DrmSyncobjHandle
+);
+ioctl_readwrite!(
+    drm_syncobj_fd_to_handle_ioctl,
+    DRM_IOCTL_BASE,
+    0xC2,
+    DrmSyncobjHandle
+);
 ioctl_readwrite!(drm_syncobj_wait_ioctl, DRM_IOCTL_BASE, 0xC3, DrmSyncobjWait);
-ioctl_readwrite!(drm_syncobj_signal_ioctl, DRM_IOCTL_BASE, 0xC5, DrmSyncobjArray);
-ioctl_readwrite!(drm_syncobj_transfer_ioctl, DRM_IOCTL_BASE, 0xCC, DrmSyncobjTransfer);
+ioctl_readwrite!(
+    drm_syncobj_signal_ioctl,
+    DRM_IOCTL_BASE,
+    0xC5,
+    DrmSyncobjArray
+);
+ioctl_readwrite!(
+    drm_syncobj_transfer_ioctl,
+    DRM_IOCTL_BASE,
+    0xCC,
+    DrmSyncobjTransfer
+);
 
 // EXPORT_SYNC_FILE and IMPORT_SYNC_FILE are NOT separate ioctls — they
 // are HANDLE_TO_FD / FD_TO_HANDLE invoked with this flag bit set. The
@@ -165,7 +195,10 @@ impl DrmDevice {
     /// so it is safe to drop the handle after exporting an fd that
     /// will be sent to a consumer.
     pub fn create_binary_syncobj(&self) -> io::Result<SyncobjHandle> {
-        let mut arg = DrmSyncobjCreate { handle: 0, flags: 0 };
+        let mut arg = DrmSyncobjCreate {
+            handle: 0,
+            flags: 0,
+        };
         unsafe {
             drm_syncobj_create_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
@@ -184,8 +217,7 @@ impl DrmDevice {
             pad: 0,
         };
         unsafe {
-            drm_syncobj_handle_to_fd_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_handle_to_fd_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         if arg.fd < 0 {
             return Err(io::Error::new(
@@ -211,8 +243,7 @@ impl DrmDevice {
             pad: 0,
         };
         unsafe {
-            drm_syncobj_fd_to_handle_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_fd_to_handle_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         if arg.handle == 0 {
             return Err(io::Error::new(
@@ -253,14 +284,12 @@ impl DrmDevice {
             handles: raw.as_mut_ptr() as u64,
             timeout_nsec,
             count_handles: raw.len() as u32,
-            flags: DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL
-                | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
+            flags: DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
             first_signaled: 0,
             pad: 0,
         };
         unsafe {
-            drm_syncobj_wait_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_wait_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         Ok(())
     }
@@ -287,8 +316,7 @@ impl DrmDevice {
             pad: 0,
         };
         unsafe {
-            drm_syncobj_handle_to_fd_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_handle_to_fd_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         if arg.fd < 0 {
             return Err(io::Error::new(
@@ -316,8 +344,7 @@ impl DrmDevice {
             pad: 0,
         };
         unsafe {
-            drm_syncobj_fd_to_handle_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_fd_to_handle_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         Ok(())
     }
@@ -334,8 +361,7 @@ impl DrmDevice {
             pad: 0,
         };
         unsafe {
-            drm_syncobj_signal_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_signal_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         Ok(())
     }
@@ -359,8 +385,7 @@ impl DrmDevice {
             pad: 0,
         };
         unsafe {
-            drm_syncobj_transfer_ioctl(self.fd.as_raw_fd(), &mut arg)
-                .map_err(errno_to_io)?;
+            drm_syncobj_transfer_ioctl(self.fd.as_raw_fd(), &mut arg).map_err(errno_to_io)?;
         }
         Ok(())
     }

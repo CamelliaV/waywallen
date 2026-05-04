@@ -23,8 +23,7 @@ use waywallen::sync::DrmDevice;
 
 fn renderer_bin() -> Option<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let candidate = manifest
-        .join("plugins/image/build/waywallen-image-renderer");
+    let candidate = manifest.join("plugins/image/build/waywallen-image-renderer");
     if candidate.exists() {
         return Some(candidate);
     }
@@ -215,9 +214,7 @@ fn release_syncobj_round_trip() {
                 drop(fds);
             }
             EventMsg::FrameReady {
-                seq,
-                release_point,
-                ..
+                seq, release_point, ..
             } => {
                 assert_eq!(fds.len(), 1, "FrameReady expected 1 acquire sync_fd");
                 drop(fds);

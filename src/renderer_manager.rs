@@ -236,8 +236,7 @@ pub struct RendererHandle {
     /// `NegotiateBuffers` to this renderer. Used for idempotence in
     /// `send_negotiate_buffers` — repeat calls with the same scheme
     /// short-circuit. `None` until the first dispatch.
-    last_dispatched_scheme:
-        Arc<StdMutex<Option<crate::negotiate::NegotiatedScheme>>>,
+    last_dispatched_scheme: Arc<StdMutex<Option<crate::negotiate::NegotiatedScheme>>>,
 
     /// Sink for per-frame [`crate::sync::FrameRecord`]s. The display
     /// endpoint pushes one record per consumer per frame; the reaper
@@ -568,9 +567,7 @@ impl RendererManager {
         // Convert to a blocking std UnixStream for the rest of the
         // lifecycle: the ipc::uds helpers use nix sendmsg/recvmsg which
         // need a real blocking fd.
-        let std_stream = tokio_stream
-            .into_std()
-            .context("UnixStream::into_std")?;
+        let std_stream = tokio_stream.into_std().context("UnixStream::into_std")?;
         std_stream
             .set_nonblocking(false)
             .context("clear O_NONBLOCK on accepted stream")?;
@@ -586,15 +583,14 @@ impl RendererManager {
         let handshake_stream = std_stream
             .try_clone()
             .context("try_clone for Init handshake")?;
-        let gpu = tokio::task::spawn_blocking(move || {
-            run_init_handshake(&handshake_stream, &init_msg)
-        })
-        .await
-        .context("init handshake join")?
-        .map_err(|e| {
-            let _ = child.start_kill();
-            e
-        })?;
+        let gpu =
+            tokio::task::spawn_blocking(move || run_init_handshake(&handshake_stream, &init_msg))
+                .await
+                .context("init handshake join")?
+                .map_err(|e| {
+                    let _ = child.start_kill();
+                    e
+                })?;
         log::info!(
             "renderer {id}: Ready (drm_render={}:{})",
             gpu.major,
@@ -603,12 +599,10 @@ impl RendererManager {
 
         // Now wire up the permanent reader thread and store the handle.
         let (events_tx, _events_rx) = broadcast::channel::<EventMsg>(256);
-        let bind_snapshot: Arc<StdMutex<Option<BindSnapshot>>> =
-            Arc::new(StdMutex::new(None));
+        let bind_snapshot: Arc<StdMutex<Option<BindSnapshot>>> = Arc::new(StdMutex::new(None));
         let sync_fds: Arc<StdMutex<std::collections::VecDeque<(u64, OwnedFd)>>> =
             Arc::new(StdMutex::new(std::collections::VecDeque::new()));
-        let release_syncobj: Arc<StdMutex<Option<OwnedFd>>> =
-            Arc::new(StdMutex::new(None));
+        let release_syncobj: Arc<StdMutex<Option<OwnedFd>>> = Arc::new(StdMutex::new(None));
         let format_caps: Arc<StdMutex<Option<crate::negotiate::PeerCaps>>> =
             Arc::new(StdMutex::new(None));
         let pending_configure: Arc<StdMutex<Option<u32>>> = Arc::new(StdMutex::new(None));
@@ -813,9 +807,15 @@ impl RendererManager {
             "renderer {id}: NegotiateBuffers fourcc=0x{:08x} modifier=0x{:x} \
              plane_count={} sync=0x{:x} color=0x{:x} mem_hint=0x{:x} \
              count={} path={:?} mem_source={:?}",
-            scheme.fourcc, scheme.modifier, scheme.plane_count,
-            scheme.sync_mode, scheme.color, scheme.mem_hint,
-            scheme.count, scheme.path, scheme.mem_source,
+            scheme.fourcc,
+            scheme.modifier,
+            scheme.plane_count,
+            scheme.sync_mode,
+            scheme.color,
+            scheme.mem_hint,
+            scheme.count,
+            scheme.path,
+            scheme.mem_source,
         );
         let msg = ControlMsg::NegotiateBuffers {
             fourcc: scheme.fourcc,
@@ -959,7 +959,10 @@ fn run_reader(
     // Any exit path from this thread — clean EOF, recvmsg error, or
     // panic — enqueues the renderer for eviction so stale ids don't
     // leak out through find_reusable or bind_snapshot.
-    let _reap = ReaperOnDrop { id: id.clone(), tx: reap_tx };
+    let _reap = ReaperOnDrop {
+        id: id.clone(),
+        tx: reap_tx,
+    };
 
     // Hold the stream by dup'ing the raw fd so the blocking recv is not
     // contending with sends on the same mutex. recvmsg on an AF_UNIX
@@ -1023,7 +1026,10 @@ fn run_reader(
                     "renderer {id}: BindBuffers length mismatch \
                      count={count} planes={planes_per_buffer} expected={expected} \
                      stride={} offset={} size={} fds={}; dropping",
-                    stride.len(), plane_offset.len(), size.len(), fds.len()
+                    stride.len(),
+                    plane_offset.len(),
+                    size.len(),
+                    fds.len()
                 );
             } else if fds.is_empty() {
                 log::warn!("renderer {id}: BindBuffers arrived without fds");
@@ -1160,7 +1166,11 @@ fn run_reader(
                         log::info!(
                             "{prefix}: imported {} fourcc{}",
                             caps.formats.by_fourcc.len(),
-                            if caps.formats.by_fourcc.len() == 1 { "" } else { "s" },
+                            if caps.formats.by_fourcc.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
                         );
                         caps.log_dump(&prefix);
                         *guard = Some(caps);
@@ -1184,9 +1194,7 @@ fn run_reader(
                  modifier=0x{modifier:x} reason={reason} msg={message:?}"
             );
         } else if !fds.is_empty() {
-            log::warn!(
-                "renderer {id}: unexpected fds on event {msg:?}, dropping"
-            );
+            log::warn!("renderer {id}: unexpected fds on event {msg:?}, dropping");
         }
 
         // Broadcast to any subscribers. No subscribers means no error:
@@ -1262,10 +1270,7 @@ impl Drop for TempUnlink {
 ///
 /// `spawn_version` is read from the manifest if set, otherwise the
 /// daemon's compile-time `SPAWN_VERSION` constant.
-pub(crate) fn build_init_msg(
-    req: &SpawnRequest,
-    def: &RendererDef,
-) -> ControlMsg {
+pub(crate) fn build_init_msg(req: &SpawnRequest, def: &RendererDef) -> ControlMsg {
     let spawn_version = def.spawn_version.unwrap_or(SPAWN_VERSION);
 
     let mut settings_kv: HashMap<String, String> = req.settings.clone();
@@ -1295,10 +1300,7 @@ pub(crate) fn build_init_msg(
 /// Factored out of `RendererManager::spawn` so unit tests can drive
 /// it directly over a `UnixStream::pair()` without booting a child
 /// process.
-pub(crate) fn run_init_handshake(
-    sock: &StdUnixStream,
-    init: &ControlMsg,
-) -> Result<DrmNode> {
+pub(crate) fn run_init_handshake(sock: &StdUnixStream, init: &ControlMsg) -> Result<DrmNode> {
     send_control(sock, init, &[])
         .map_err(|e| Error::RendererSpawnFailed(format!("send Init: {e}")))?;
     let (evt, fds) =
@@ -1440,7 +1442,11 @@ mod init_handshake_tests {
         let mut ps = HashMap::new();
         ps.insert(
             "loop_file".to_string(),
-            SettingDef::new(SettingType::String, toml::Value::String("inf".into()), false),
+            SettingDef::new(
+                SettingType::String,
+                toml::Value::String("inf".into()),
+                false,
+            ),
         );
         RendererDef {
             name: "waywallen-mpv".into(),
@@ -1492,10 +1498,7 @@ mod init_handshake_tests {
                 assert_eq!(extent_w, 1920);
                 assert_eq!(extent_h, 1080);
                 assert_eq!(extent_mode, 0);
-                assert_eq!(
-                    settings,
-                    vec![("loop_file".to_string(), "inf".to_string())]
-                );
+                assert_eq!(settings, vec![("loop_file".to_string(), "inf".to_string())]);
             }
             other => panic!("expected ControlMsg::Init, got {other:?}"),
         }
@@ -1506,8 +1509,7 @@ mod init_handshake_tests {
         // Daemon side ↔ renderer side over a socketpair: we drive
         // `run_init_handshake` from the daemon side and have a tiny
         // peer thread reply with an InitNack on the renderer side.
-        let (daemon, renderer) =
-            StdUnixStream::pair().expect("UnixStream::pair");
+        let (daemon, renderer) = StdUnixStream::pair().expect("UnixStream::pair");
         daemon
             .set_nonblocking(false)
             .expect("set_nonblocking(false) on daemon side");
@@ -1517,8 +1519,7 @@ mod init_handshake_tests {
 
         let peer = thread::spawn(move || {
             // Receive the Init then immediately reply with InitNack.
-            let (got, _fds) = crate::ipc::uds::recv_control(&renderer)
-                .expect("renderer recv Init");
+            let (got, _fds) = crate::ipc::uds::recv_control(&renderer).expect("renderer recv Init");
             assert!(matches!(got, ControlMsg::Init { .. }));
             send_event(
                 &renderer,
@@ -1545,14 +1546,17 @@ mod init_handshake_tests {
             renderer_name: None,
         };
         let init = build_init_msg(&req, &def_legacy("wescene-renderer"));
-        let err = run_init_handshake(&daemon, &init)
-            .expect_err("InitNack must abort the handshake");
+        let err =
+            run_init_handshake(&daemon, &init).expect_err("InitNack must abort the handshake");
         let s = err.to_string();
         assert!(
             s.contains("renderer rejected Init"),
             "unexpected error: {s}"
         );
-        assert!(s.contains("unsupported spawn_version"), "unexpected error: {s}");
+        assert!(
+            s.contains("unsupported spawn_version"),
+            "unexpected error: {s}"
+        );
 
         peer.join().expect("peer thread");
     }
@@ -1570,11 +1574,19 @@ mod reuse_tests {
         let mut ps = HashMap::new();
         ps.insert(
             "loop_file".to_string(),
-            SettingDef::new(SettingType::String, toml::Value::String("inf".into()), false),
+            SettingDef::new(
+                SettingType::String,
+                toml::Value::String("inf".into()),
+                false,
+            ),
         );
         ps.insert(
             "hwdec".to_string(),
-            SettingDef::new(SettingType::String, toml::Value::String("auto".into()), false),
+            SettingDef::new(
+                SettingType::String,
+                toml::Value::String("auto".into()),
+                false,
+            ),
         );
         RendererDef {
             name: "waywallen-mpv".into(),
@@ -1654,7 +1666,8 @@ mod reuse_tests {
 
         let mut h_extras = HashMap::new();
         h_extras.insert("path".into(), "/clip.mp4".into());
-        mgr.register_test_handle(live_mpv_handle("h1", h_extras)).await;
+        mgr.register_test_handle(live_mpv_handle("h1", h_extras))
+            .await;
 
         let mut req_extras = HashMap::new();
         req_extras.insert("path".into(), "/other.mp4".into());
@@ -1674,8 +1687,7 @@ mod reuse_tests {
         registry.register(def_mpv());
         let mgr = RendererManager::new(registry);
 
-        let (daemon_side, renderer_side) =
-            std::os::unix::net::UnixStream::pair().unwrap();
+        let (daemon_side, renderer_side) = std::os::unix::net::UnixStream::pair().unwrap();
         daemon_side.set_nonblocking(false).unwrap();
         renderer_side.set_nonblocking(false).unwrap();
 
@@ -1705,18 +1717,13 @@ mod reuse_tests {
 
         // Renderer-side reader running in a thread to drain the wire.
         let peer = std::thread::spawn(move || {
-            let (req, _fds) =
-                crate::ipc::uds::recv_control(&renderer_side).expect("recv");
+            let (req, _fds) = crate::ipc::uds::recv_control(&renderer_side).expect("recv");
             req
         });
 
-        mgr.send_apply_settings(
-            "h1",
-            vec![("loop_file".into(), "no".into())],
-            None,
-        )
-        .await
-        .expect("send_apply_settings ok");
+        mgr.send_apply_settings("h1", vec![("loop_file".into(), "no".into())], None)
+            .await
+            .expect("send_apply_settings ok");
 
         let got = peer.join().expect("peer joined");
         match got {

@@ -40,11 +40,13 @@ const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 fn drm_fourcc_to_vk(fourcc: u32) -> Option<vk::Format> {
     match fourcc {
         // ABGR8888 / XBGR8888 — R-G-B-A byte order in memory.
-        waywallen::negotiate::DRM_FORMAT_ABGR8888
-        | waywallen::negotiate::DRM_FORMAT_XBGR8888 => Some(vk::Format::R8G8B8A8_UNORM),
+        waywallen::negotiate::DRM_FORMAT_ABGR8888 | waywallen::negotiate::DRM_FORMAT_XBGR8888 => {
+            Some(vk::Format::R8G8B8A8_UNORM)
+        }
         // ARGB8888 / XRGB8888 — B-G-R-A byte order in memory.
-        waywallen::negotiate::DRM_FORMAT_ARGB8888
-        | waywallen::negotiate::DRM_FORMAT_XRGB8888 => Some(vk::Format::B8G8R8A8_UNORM),
+        waywallen::negotiate::DRM_FORMAT_ARGB8888 | waywallen::negotiate::DRM_FORMAT_XRGB8888 => {
+            Some(vk::Format::B8G8R8A8_UNORM)
+        }
         _ => None,
     }
 }
@@ -96,8 +98,7 @@ impl VkContext {
         // Loaded at runtime so the test still builds on hosts without
         // the Vulkan loader installed (it'll just fail at construction
         // time, which the caller handles by skipping).
-        let entry = unsafe { ash::Entry::load() }
-            .context("load Vulkan loader (libvulkan.so.1)")?;
+        let entry = unsafe { ash::Entry::load() }.context("load Vulkan loader (libvulkan.so.1)")?;
 
         // ---- Instance ----
         let app_name = CStr::from_bytes_with_nul(b"waywallen-dump-display\0").unwrap();
@@ -137,11 +138,10 @@ impl VkContext {
         let physical = pds
             .into_iter()
             .find(|pd| {
-                let exts =
-                    match unsafe { instance.enumerate_device_extension_properties(*pd) } {
-                        Ok(v) => v,
-                        Err(_) => return false,
-                    };
+                let exts = match unsafe { instance.enumerate_device_extension_properties(*pd) } {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
                 req_dev_exts.iter().all(|need| {
                     exts.iter().any(|p| {
                         let n = unsafe { CStr::from_ptr(p.extension_name.as_ptr()) };
@@ -152,12 +152,14 @@ impl VkContext {
             .ok_or_else(|| {
                 anyhow!(
                     "no physical device exposes the required extension set: {:?}",
-                    req_dev_exts.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>()
+                    req_dev_exts
+                        .iter()
+                        .map(|c| c.to_string_lossy())
+                        .collect::<Vec<_>>()
                 )
             })?;
-        let have_drm_ext = match unsafe {
-            instance.enumerate_device_extension_properties(physical)
-        } {
+        let have_drm_ext = match unsafe { instance.enumerate_device_extension_properties(physical) }
+        {
             Ok(exts) => exts.iter().any(|p| {
                 let n = unsafe { CStr::from_ptr(p.extension_name.as_ptr()) };
                 n == drm_ext_name
@@ -166,15 +168,12 @@ impl VkContext {
         };
 
         // ---- Queue family ----
-        let qf_props =
-            unsafe { instance.get_physical_device_queue_family_properties(physical) };
+        let qf_props = unsafe { instance.get_physical_device_queue_family_properties(physical) };
         let queue_family = qf_props
             .iter()
             .position(|q| {
                 q.queue_flags.intersects(
-                    vk::QueueFlags::GRAPHICS
-                        | vk::QueueFlags::COMPUTE
-                        | vk::QueueFlags::TRANSFER,
+                    vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER,
                 )
             })
             .ok_or_else(|| anyhow!("no transfer-capable queue family"))?
@@ -186,8 +185,7 @@ impl VkContext {
             .queue_family_index(queue_family)
             .queue_priorities(&prio);
 
-        let mut dev_ext_names: Vec<*const i8> =
-            req_dev_exts.iter().map(|c| c.as_ptr()).collect();
+        let mut dev_ext_names: Vec<*const i8> = req_dev_exts.iter().map(|c| c.as_ptr()).collect();
         if have_drm_ext {
             dev_ext_names.push(drm_ext_name.as_ptr());
         }
@@ -201,10 +199,8 @@ impl VkContext {
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
 
         // ---- Extension fn loaders ----
-        let drm_modifier =
-            ash::ext::image_drm_format_modifier::Device::new(&instance, &device);
-        let external_memory_fd =
-            ash::khr::external_memory_fd::Device::new(&instance, &device);
+        let drm_modifier = ash::ext::image_drm_format_modifier::Device::new(&instance, &device);
+        let external_memory_fd = ash::khr::external_memory_fd::Device::new(&instance, &device);
         let external_semaphore_fd =
             ash::khr::external_semaphore_fd::Device::new(&instance, &device);
 
@@ -224,8 +220,7 @@ impl VkContext {
             (0, 0)
         };
 
-        let mem_props =
-            unsafe { instance.get_physical_device_memory_properties(physical) };
+        let mem_props = unsafe { instance.get_physical_device_memory_properties(physical) };
 
         // ---- Command pool ----
         let pool_ci = vk::CommandPoolCreateInfo::default()
@@ -385,13 +380,31 @@ impl VkContext {
     ) -> Result<()> {
         if modifier == DRM_FORMAT_MOD_LINEAR {
             return import_and_dump_linear(
-                dmabuf_fd, acquire_fd, fourcc, modifier, width, height, stride,
-                plane_offset, size, seq, dump_dir,
+                dmabuf_fd,
+                acquire_fd,
+                fourcc,
+                modifier,
+                width,
+                height,
+                stride,
+                plane_offset,
+                size,
+                seq,
+                dump_dir,
             );
         }
         self.import_and_dump_tiled(
-            dmabuf_fd, acquire_fd, fourcc, modifier, width, height, stride,
-            plane_offset, size, seq, dump_dir,
+            dmabuf_fd,
+            acquire_fd,
+            fourcc,
+            modifier,
+            width,
+            height,
+            stride,
+            plane_offset,
+            size,
+            seq,
+            dump_dir,
         )
     }
 
@@ -429,7 +442,11 @@ impl VkContext {
         let image_ci = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(vk_format)
-            .extent(vk::Extent3D { width, height, depth: 1 })
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -441,9 +458,7 @@ impl VkContext {
             .push_next(&mut ext_mem_info)
             .push_next(&mut mod_info);
         let image = unsafe { self.device.create_image(&image_ci, None) }.map_err(|e| {
-            anyhow!(
-                "vkCreateImage(modifier=0x{modifier:016x}, fourcc=0x{fourcc:08x}): {e:?}"
-            )
+            anyhow!("vkCreateImage(modifier=0x{modifier:016x}, fourcc=0x{fourcc:08x}): {e:?}")
         })?;
 
         let cleanup_image = ImageGuard { ctx: self, image };
@@ -534,7 +549,10 @@ impl VkContext {
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let staging_buf = unsafe { self.device.create_buffer(&buf_ci, None) }
             .map_err(|e| anyhow!("create_buffer staging: {e:?}"))?;
-        let cleanup_buf = BufferGuard { ctx: self, buffer: staging_buf };
+        let cleanup_buf = BufferGuard {
+            ctx: self,
+            buffer: staging_buf,
+        };
         let buf_req = unsafe { self.device.get_buffer_memory_requirements(staging_buf) };
         let mem_idx = self
             .find_memory_type(
@@ -547,7 +565,10 @@ impl VkContext {
             .memory_type_index(mem_idx);
         let staging_mem = unsafe { self.device.allocate_memory(&staging_alloc, None) }
             .map_err(|e| anyhow!("allocate_memory staging: {e:?}"))?;
-        let cleanup_staging_mem = MemoryGuard { ctx: self, memory: staging_mem };
+        let cleanup_staging_mem = MemoryGuard {
+            ctx: self,
+            memory: staging_mem,
+        };
         unsafe {
             self.device
                 .bind_buffer_memory(staging_buf, staging_mem, 0)
@@ -559,9 +580,8 @@ impl VkContext {
             .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
-        let cmd_bufs =
-            unsafe { self.device.allocate_command_buffers(&cb_alloc) }
-                .map_err(|e| anyhow!("allocate_command_buffers: {e:?}"))?;
+        let cmd_bufs = unsafe { self.device.allocate_command_buffers(&cb_alloc) }
+            .map_err(|e| anyhow!("allocate_command_buffers: {e:?}"))?;
         let cb = cmd_bufs[0];
         let cleanup_cb = CmdBufGuard {
             ctx: self,
@@ -620,7 +640,11 @@ impl VkContext {
                 layer_count: 1,
             },
             image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-            image_extent: vk::Extent3D { width, height, depth: 1 },
+            image_extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
         };
         unsafe {
             self.device.cmd_copy_image_to_buffer(
@@ -664,7 +688,10 @@ impl VkContext {
         let sem_ci = vk::SemaphoreCreateInfo::default();
         let acquire_sem = unsafe { self.device.create_semaphore(&sem_ci, None) }
             .map_err(|e| anyhow!("create_semaphore: {e:?}"))?;
-        let cleanup_sem = SemaphoreGuard { ctx: self, sem: acquire_sem };
+        let cleanup_sem = SemaphoreGuard {
+            ctx: self,
+            sem: acquire_sem,
+        };
 
         // Dup so the caller's OwnedFd can drop unconditionally —
         // VkImportSemaphoreFdInfoKHR with SYNC_FD + TEMPORARY consumes
@@ -715,8 +742,8 @@ impl VkContext {
         let dump_path = dump_dir.join(format!(
             "consumer-{seq:06}-0x{fourcc:08x}-0x{modifier:016x}.bin"
         ));
-        let mut file = File::create(&dump_path)
-            .with_context(|| format!("create {}", dump_path.display()))?;
+        let mut file =
+            File::create(&dump_path).with_context(|| format!("create {}", dump_path.display()))?;
         let bytes = unsafe { std::slice::from_raw_parts(map, staging_size as usize) };
         file.write_all(bytes).context("dump write")?;
         unsafe { self.device.unmap_memory(staging_mem) };
@@ -752,11 +779,7 @@ impl VkContext {
         Ok(())
     }
 
-    fn find_memory_type(
-        &self,
-        type_bits: u32,
-        flags: vk::MemoryPropertyFlags,
-    ) -> Option<u32> {
+    fn find_memory_type(&self, type_bits: u32, flags: vk::MemoryPropertyFlags) -> Option<u32> {
         for i in 0..self.mem_props.memory_type_count {
             if (type_bits >> i) & 1 == 0 {
                 continue;
@@ -828,14 +851,17 @@ fn import_and_dump_linear(
     }
     let raw = map as *const u8;
 
-    sync_dma_buf(dmabuf_fd.as_raw_fd(), DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)
-        .context("DMA_BUF_IOCTL_SYNC start")?;
+    sync_dma_buf(
+        dmabuf_fd.as_raw_fd(),
+        DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ,
+    )
+    .context("DMA_BUF_IOCTL_SYNC start")?;
 
     let dump_path = dump_dir.join(format!(
         "consumer-{seq:06}-0x{fourcc:08x}-0x{modifier:016x}.bin"
     ));
-    let mut file = File::create(&dump_path)
-        .with_context(|| format!("create {}", dump_path.display()))?;
+    let mut file =
+        File::create(&dump_path).with_context(|| format!("create {}", dump_path.display()))?;
     let plane_off = plane_offset as usize;
     let row_bytes = (width as usize) * 4;
     let stride_us = stride as usize;
@@ -889,8 +915,22 @@ fn uuid_str(u: &[u8; 16]) -> String {
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-\
          {:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7],
-        u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15],
+        u[0],
+        u[1],
+        u[2],
+        u[3],
+        u[4],
+        u[5],
+        u[6],
+        u[7],
+        u[8],
+        u[9],
+        u[10],
+        u[11],
+        u[12],
+        u[13],
+        u[14],
+        u[15],
     )
 }
 

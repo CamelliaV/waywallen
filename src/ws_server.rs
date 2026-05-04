@@ -28,7 +28,13 @@ use crate::AppState;
 /// Bind the WebSocket control plane and return the actual local address
 /// (useful when binding to port 0 for OS-assigned ports).  The returned
 /// future runs the accept loop and never returns under normal operation.
-pub async fn bind(state: Arc<AppState>, addr: &str) -> Result<(std::net::SocketAddr, impl std::future::Future<Output = Result<()>>)> {
+pub async fn bind(
+    state: Arc<AppState>,
+    addr: &str,
+) -> Result<(
+    std::net::SocketAddr,
+    impl std::future::Future<Output = Result<()>>,
+)> {
     let listener = TcpListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;
     log::info!("ws control plane listening on {local_addr}");
@@ -39,6 +45,172 @@ pub async fn bind(state: Arc<AppState>, addr: &str) -> Result<(std::net::SocketA
 pub async fn serve(state: Arc<AppState>, addr: &str) -> Result<()> {
     let (_, fut) = bind(state, addr).await?;
     fut.await
+}
+
+fn wallpaper_filter_from_pb(f: &pb::WallpaperFilter) -> playlist::Filter {
+    let mut out = playlist::Filter::default();
+    out.wp_types = f.wp_types.clone();
+    out.tags_any = f.tags_any.clone();
+    out.tags_all = f.tags_all.clone();
+    out.libraries = f.libraries.clone();
+    out.formats = f.formats.clone();
+    out.name_like = (!f.name_like.is_empty()).then(|| f.name_like.clone());
+    out.min_width = (f.min_width > 0).then_some(f.min_width);
+    out.min_height = (f.min_height > 0).then_some(f.min_height);
+    out.min_size = (f.min_size > 0).then_some(f.min_size);
+    out.max_size = (f.max_size > 0).then_some(f.max_size);
+    out.aspect = match pb::WallpaperAspect::try_from(f.aspect) {
+        Ok(pb::WallpaperAspect::Landscape) => Some(playlist::AspectClass::Landscape),
+        Ok(pb::WallpaperAspect::Portrait) => Some(playlist::AspectClass::Portrait),
+        Ok(pb::WallpaperAspect::Square) => Some(playlist::AspectClass::Square),
+        _ => None,
+    };
+    out
+}
+
+fn wallpaper_rule_matches_string(actual: &str, filter: &pb::WallpaperStringFilter) -> bool {
+    let needle = filter.value.trim();
+    match pb::StringCondition::try_from(filter.condition) {
+        Ok(pb::StringCondition::Is) => actual.eq_ignore_ascii_case(needle),
+        Ok(pb::StringCondition::IsNot) => !actual.eq_ignore_ascii_case(needle),
+        Ok(pb::StringCondition::Contains) => actual
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase()),
+        Ok(pb::StringCondition::ContainsNot) => !actual
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase()),
+        _ => true,
+    }
+}
+
+fn wallpaper_rule_matches_i64(actual: Option<i64>, filter: &pb::WallpaperIntFilter) -> bool {
+    let Some(actual) = actual else {
+        return matches!(
+            pb::IntCondition::try_from(filter.condition),
+            Ok(pb::IntCondition::Unspecified)
+        );
+    };
+    match pb::IntCondition::try_from(filter.condition) {
+        Ok(pb::IntCondition::Equal) => actual == filter.value,
+        Ok(pb::IntCondition::EqualNot) => actual != filter.value,
+        Ok(pb::IntCondition::Less) => actual < filter.value,
+        Ok(pb::IntCondition::LessEqual) => actual <= filter.value,
+        Ok(pb::IntCondition::Greater) => actual > filter.value,
+        Ok(pb::IntCondition::GreaterEqual) => actual >= filter.value,
+        _ => true,
+    }
+}
+
+fn wallpaper_entry_aspect(
+    entry: &crate::wallpaper_type::WallpaperEntry,
+) -> Option<pb::WallpaperAspect> {
+    let (Some(width), Some(height)) = (entry.width, entry.height) else {
+        return None;
+    };
+    Some(if width > height {
+        pb::WallpaperAspect::Landscape
+    } else if width < height {
+        pb::WallpaperAspect::Portrait
+    } else {
+        pb::WallpaperAspect::Square
+    })
+}
+
+fn wallpaper_rule_matches(
+    entry: &crate::wallpaper_type::WallpaperEntry,
+    rule: &pb::WallpaperFilterRule,
+) -> bool {
+    use pb::wallpaper_filter_rule::Payload;
+
+    match pb::WallpaperFilterType::try_from(rule.r#type) {
+        Ok(pb::WallpaperFilterType::Name) => match rule.payload.as_ref() {
+            Some(Payload::StringFilter(f)) => wallpaper_rule_matches_string(&entry.name, f),
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::WpType) => match rule.payload.as_ref() {
+            Some(Payload::StringFilter(f)) => wallpaper_rule_matches_string(&entry.wp_type, f),
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::Library) => match rule.payload.as_ref() {
+            Some(Payload::StringFilter(f)) => wallpaper_rule_matches_string(&entry.library_root, f),
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::Format) => match rule.payload.as_ref() {
+            Some(Payload::StringFilter(f)) => {
+                wallpaper_rule_matches_string(entry.format.as_deref().unwrap_or_default(), f)
+            }
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::Width) => match rule.payload.as_ref() {
+            Some(Payload::IntFilter(f)) => {
+                wallpaper_rule_matches_i64(entry.width.map(i64::from), f)
+            }
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::Height) => match rule.payload.as_ref() {
+            Some(Payload::IntFilter(f)) => {
+                wallpaper_rule_matches_i64(entry.height.map(i64::from), f)
+            }
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::Size) => match rule.payload.as_ref() {
+            Some(Payload::IntFilter(f)) => wallpaper_rule_matches_i64(entry.size, f),
+            _ => true,
+        },
+        Ok(pb::WallpaperFilterType::Aspect) => match rule.payload.as_ref() {
+            Some(Payload::AspectFilter(f)) => match pb::TypeCondition::try_from(f.condition) {
+                Ok(pb::TypeCondition::Is) => {
+                    wallpaper_entry_aspect(entry) == pb::WallpaperAspect::try_from(f.value).ok()
+                }
+                Ok(pb::TypeCondition::IsNot) => {
+                    wallpaper_entry_aspect(entry) != pb::WallpaperAspect::try_from(f.value).ok()
+                }
+                _ => true,
+            },
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
+fn wallpaper_rules_match(
+    entry: &crate::wallpaper_type::WallpaperEntry,
+    rules: &[pb::WallpaperFilterRule],
+    logics: &[pb::FilterLogic],
+) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+
+    let mut groups = std::collections::BTreeMap::<i32, Vec<&pb::WallpaperFilterRule>>::new();
+    for rule in rules {
+        groups.entry(rule.group).or_default().push(rule);
+    }
+
+    let mut group_values = Vec::with_capacity(groups.len());
+    for (group_id, group_rules) in groups {
+        let matched = group_rules
+            .into_iter()
+            .all(|rule| wallpaper_rule_matches(entry, rule));
+        group_values.push((group_id, matched));
+    }
+
+    let mut acc = group_values[0].1;
+    for pair in group_values.windows(2) {
+        let [(prev_group, _), (group, value)] = pair else {
+            continue;
+        };
+        let op = logics
+            .iter()
+            .find(|logic| logic.group_a == *prev_group && logic.group_b == *group)
+            .and_then(|logic| pb::LogicOp::try_from(logic.op).ok())
+            .unwrap_or(pb::LogicOp::And);
+        acc = match op {
+            pb::LogicOp::Or => acc || *value,
+            _ => acc && *value,
+        };
+    }
+    acc
 }
 
 async fn accept_loop(state: Arc<AppState>, listener: TcpListener) -> Result<()> {
@@ -74,22 +246,28 @@ async fn handle_conn(
     {
         let snap = state.router.snapshot_displays().await;
         let evt = displays_replace_event(snap, &state.settings);
-        sink.send(Message::Binary(wrap_event(evt).encode_to_vec())).await?;
+        sink.send(Message::Binary(wrap_event(evt).encode_to_vec()))
+            .await?;
     }
     {
         let snap = state.router.snapshot_renderers().await;
         let evt = renderers_replace_event(snap, &state.settings);
-        sink.send(Message::Binary(wrap_event(evt).encode_to_vec())).await?;
+        sink.send(Message::Binary(wrap_event(evt).encode_to_vec()))
+            .await?;
     }
 
     {
         let snap = control::list_library_snapshots(&state.db).await;
         let evt = libraries_replace_event(snap);
-        sink.send(Message::Binary(wrap_event(evt).encode_to_vec())).await?;
+        sink.send(Message::Binary(wrap_event(evt).encode_to_vec()))
+            .await?;
     }
     // Initial daemon-status snapshot. Same wire shape as subsequent
     // pushes so the UI handler is uniform.
-    sink.send(Message::Binary(wrap_event(status_sync_event(&state)).encode_to_vec())).await?;
+    sink.send(Message::Binary(
+        wrap_event(status_sync_event(&state)).encode_to_vec(),
+    ))
+    .await?;
 
     loop {
         tokio::select! {
@@ -239,7 +417,10 @@ fn layout_prefs_to_pb_resolved(r: &crate::settings::ResolvedLayout) -> pb::Layou
 fn layout_override_to_pb(p: &crate::settings::DisplayPrefs) -> pb::LayoutOverride {
     pb::LayoutOverride {
         fillmode_set: p.fillmode.is_some(),
-        fillmode: p.fillmode.map(fillmode_to_pb).unwrap_or(pb::FillMode::Unspecified) as i32,
+        fillmode: p
+            .fillmode
+            .map(fillmode_to_pb)
+            .unwrap_or(pb::FillMode::Unspecified) as i32,
         align_set: p.align.is_some(),
         align: p.align.map(align_to_pb).unwrap_or(pb::Align::Unspecified) as i32,
         clear_rgba_set: p.clear_rgba.is_some(),
@@ -418,7 +599,9 @@ fn router_event_to_pb(e: RouterEvent, settings: &SettingsStore) -> pb::Event {
             })),
         },
         RouterEvent::LibraryRemoved(id) => pb::Event {
-            payload: Some(pb::event::Payload::LibraryRemoved(pb::LibraryRemoved { id })),
+            payload: Some(pb::event::Payload::LibraryRemoved(pb::LibraryRemoved {
+                id,
+            })),
         },
         RouterEvent::LibrariesReplace(list) => libraries_replace_event(list),
     }
@@ -487,9 +670,9 @@ fn global_event_to_pb(e: &GlobalEvent, state: &Arc<AppState>) -> Option<pb::Even
                 payload: Some(pb::event::Payload::SettingsChanged(pb::SettingsChanged {
                     global: Some(pb::GlobalSettings {
                         target_extent: snap.global.target_extent,
-                        render_size_policy: render_size_policy_to_pb(
-                            snap.global.render_size_policy,
-                        ) as i32,
+                        render_size_policy: render_size_policy_to_pb(snap.global.render_size_policy)
+                            as i32,
+                        wallpaper_filter_json: snap.global.wallpaper_filter_json,
                         layout_defaults: Some(layout_defaults),
                     }),
                     plugins: snap
@@ -549,7 +732,11 @@ async fn dispatch_inner(
                 settings.insert("fps".to_string(), r.fps.to_string());
             }
             let spawn_req = renderer_manager::SpawnRequest {
-                wp_type: if r.wp_type.is_empty() { "scene".into() } else { r.wp_type },
+                wp_type: if r.wp_type.is_empty() {
+                    "scene".into()
+                } else {
+                    r.wp_type
+                },
                 extras: r.metadata,
                 settings,
                 width: r.width,
@@ -584,7 +771,11 @@ async fn dispatch_inner(
                     .plugin(&name)
                     .and_then(|kv| kv.get("fps").and_then(|v| v.parse().ok()))
                     .unwrap_or(0);
-                let status = if state.router.is_paused(id).await { "paused" } else { "playing" };
+                let status = if state.router.is_paused(id).await {
+                    "paused"
+                } else {
+                    "playing"
+                };
                 instances.push(pb::RendererInstance {
                     renderer_id: id.clone(),
                     fps,
@@ -661,11 +852,7 @@ async fn dispatch_inner(
                     }
                 })
                 .collect();
-            let supported_types = registry
-                .supported_types()
-                .into_iter()
-                .cloned()
-                .collect();
+            let supported_types = registry.supported_types().into_iter().cloned().collect();
             Res::RendererPluginList(pb::RendererPluginListResponse {
                 renderers,
                 supported_types,
@@ -683,7 +870,10 @@ async fn dispatch_inner(
             // failures propagate as `Internal` (via anyhow::Error From)
             // instead of being silently dropped — the caller sees the
             // actual problem.
-            let db_meta_map: std::collections::HashMap<(String, String), crate::model::entities::item::Model> = {
+            let db_meta_map: std::collections::HashMap<
+                (String, String),
+                crate::model::entities::item::Model,
+            > = {
                 let libs = repo::list_libraries(&state.db).await?;
                 let lib_path_by_id: std::collections::HashMap<i64, String> =
                     libs.into_iter().map(|l| (l.id, l.path)).collect();
@@ -704,24 +894,42 @@ async fn dispatch_inner(
                 snap.list_by_type(&r.wp_type)
             };
 
-            let total = raw_entries.len() as u32;
+            let filtered_entries: Vec<&crate::wallpaper_type::WallpaperEntry> =
+                if !r.filters.is_empty() {
+                    raw_entries
+                        .into_iter()
+                        .filter(|e| wallpaper_rules_match(e, &r.filters, &r.filter_logics))
+                        .collect()
+                } else if let Some(filter_pb) = r.filter.as_ref() {
+                    let filter = wallpaper_filter_from_pb(filter_pb);
+                    if filter.is_match_all() {
+                        raw_entries
+                    } else {
+                        raw_entries
+                            .into_iter()
+                            .filter(|e| filter.matches(e))
+                            .collect()
+                    }
+                } else {
+                    raw_entries
+                };
+
+            let total = filtered_entries.len() as u32;
             let page_size = r.page_size as usize;
             let (offset, take) = if page_size == 0 {
-                (0usize, raw_entries.len())
+                (0usize, filtered_entries.len())
             } else {
                 ((r.page as usize) * page_size, page_size)
             };
 
-            let entries: Vec<pb::WallpaperEntry> = raw_entries
+            let entries: Vec<pb::WallpaperEntry> = filtered_entries
                 .into_iter()
                 .skip(offset)
                 .take(take)
                 .map(|e| {
-                    let db_meta = crate::model::sync::relative_under_root(
-                        &e.library_root,
-                        &e.resource,
-                    )
-                    .and_then(|rel| db_meta_map.get(&(e.library_root.clone(), rel)));
+                    let db_meta =
+                        crate::model::sync::relative_under_root(&e.library_root, &e.resource)
+                            .and_then(|rel| db_meta_map.get(&(e.library_root.clone(), rel)));
                     entry_to_pb(e, db_meta)
                 })
                 .collect();
@@ -866,10 +1074,7 @@ async fn dispatch_inner(
             let (width, height, extent_mode) =
                 crate::settings::resolve_extent(g.render_size_policy, g.target_extent);
 
-            let plugin_kv = state
-                .settings
-                .plugin(&plugin_name)
-                .unwrap_or_default();
+            let plugin_kv = state.settings.plugin(&plugin_name).unwrap_or_default();
 
             // SPAWN_VERSION 3: extras (canonical `path` + manifest
             // whitelist like `assets`/`workshop_id`) ride as CLI
@@ -997,9 +1202,9 @@ async fn dispatch_inner(
             Res::SettingsGet(pb::SettingsGetResponse {
                 global: Some(pb::GlobalSettings {
                     target_extent: snap.global.target_extent,
-                    render_size_policy: render_size_policy_to_pb(
-                        snap.global.render_size_policy,
-                    ) as i32,
+                    render_size_policy: render_size_policy_to_pb(snap.global.render_size_policy)
+                        as i32,
+                    wallpaper_filter_json: snap.global.wallpaper_filter_json,
                     layout_defaults: Some(layout_defaults),
                 }),
                 plugins: snap
@@ -1017,11 +1222,7 @@ async fn dispatch_inner(
             let mut new_plugins: std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, String>,
-            > = r
-                .plugins
-                .into_iter()
-                .map(|(k, v)| (k, v.values))
-                .collect();
+            > = r.plugins.into_iter().map(|(k, v)| (k, v.values)).collect();
 
             // Schema validation up-front. Reject the entire RPC if any
             // declared key fails type / bounds / choices — partial
@@ -1044,12 +1245,11 @@ async fn dispatch_inner(
                         let Some(schema) = def.settings.get(k) else {
                             continue;
                         };
-                        let coerced = crate::plugin::renderer_registry::coerce_and_validate(
-                            k, v, schema,
-                        )
-                        .map_err(|e| {
-                            Error::SettingsValidationFailed(format!("{plugin_name}.{e}"))
-                        })?;
+                        let coerced =
+                            crate::plugin::renderer_registry::coerce_and_validate(k, v, schema)
+                                .map_err(|e| {
+                                    Error::SettingsValidationFailed(format!("{plugin_name}.{e}"))
+                                })?;
                         *v = coerced;
                     }
                 }
@@ -1065,8 +1265,8 @@ async fn dispatch_inner(
             state.settings.update(|s| {
                 if let Some(g) = r.global.as_ref() {
                     s.global.target_extent = g.target_extent;
-                    s.global.render_size_policy =
-                        render_size_policy_from_pb(g.render_size_policy);
+                    s.global.render_size_policy = render_size_policy_from_pb(g.render_size_policy);
+                    s.global.wallpaper_filter_json = g.wallpaper_filter_json.clone();
                     if let Some(ld) = g.layout_defaults.as_ref() {
                         if let Some(fm) = fillmode_from_pb(ld.fillmode) {
                             s.global.layout.fillmode = fm;
@@ -1087,9 +1287,7 @@ async fn dispatch_inner(
                 // Push fresh DisplaySnapshot so subscribers see new
                 // effective_layout values.
                 let snap = state.router.snapshot_displays().await;
-                state
-                    .router
-                    .emit_displays_replace_for_settings_change(snap);
+                state.router.emit_displays_replace_for_settings_change(snap);
             }
             // Step 4: live renderer hot-reload.
             // For each plugin that actually changed, walk live
@@ -1138,9 +1336,7 @@ async fn dispatch_inner(
                 // which sources the same settings store.
                 let kv: Vec<(String, String)> = new_kv
                     .iter()
-                    .filter(|(k, v)| {
-                        def.settings.contains_key(*k) && old_kv.get(*k) != Some(v)
-                    })
+                    .filter(|(k, v)| def.settings.contains_key(*k) && old_kv.get(*k) != Some(v))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 if kv.is_empty() {
@@ -1244,7 +1440,6 @@ async fn dispatch_inner(
         }
 
         // ---- playlists ----------------------------------------------------
-
         Req::PlaylistList(_) => {
             let rows = control::list_playlists(&state).await?;
             let playlists = rows
@@ -1402,10 +1597,7 @@ fn mode_str_to_pb(s: &str) -> pb::PlaylistMode {
 /// Encode a dispatch result onto the wire. Thin wrapper around
 /// `Error::to_response` / `ok_response` from `crate::error`; the dispatch
 /// boundary is the only place the daemon-side `Error` becomes wire bytes.
-fn build_response(
-    request_id: u64,
-    result: Result<pb::response::Payload, Error>,
-) -> pb::Response {
+fn build_response(request_id: u64, result: Result<pb::response::Payload, Error>) -> pb::Response {
     match result {
         Ok(payload) => ok_response(request_id, payload),
         Err(e) => e.to_response(request_id),
@@ -1431,10 +1623,7 @@ fn entry_to_pb(
 ) -> pb::WallpaperEntry {
     // Prefer DB values (freshest, written by the probe task); fall back to
     // what the Lua plugin may have pre-filled on the in-memory entry.
-    let size = db_meta
-        .and_then(|m| m.size)
-        .or(e.size)
-        .unwrap_or(0);
+    let size = db_meta.and_then(|m| m.size).or(e.size).unwrap_or(0);
     let width = db_meta
         .and_then(|m| m.width)
         .map(|v| v as u32)
@@ -1471,5 +1660,111 @@ fn entry_to_pb(
         width,
         height,
         format,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{wallpaper_filter_from_pb, wallpaper_rules_match};
+    use crate::control_proto as pb;
+    use crate::playlist::AspectClass;
+    use crate::wallpaper_type::WallpaperEntry;
+    use std::collections::HashMap;
+
+    #[test]
+    fn pb_wallpaper_filter_converts_to_playlist_filter() {
+        let pb = pb::WallpaperFilter {
+            wp_types: vec!["video".into()],
+            tags_any: vec!["anime".into()],
+            tags_all: vec!["landscape".into()],
+            libraries: vec!["/lib".into()],
+            formats: vec!["mp4".into()],
+            name_like: "city".into(),
+            min_width: 1920,
+            min_height: 1080,
+            min_size: 1024,
+            max_size: 4096,
+            aspect: pb::WallpaperAspect::Landscape as i32,
+        };
+
+        let f = wallpaper_filter_from_pb(&pb);
+        assert_eq!(f.wp_types, vec!["video"]);
+        assert_eq!(f.tags_any, vec!["anime"]);
+        assert_eq!(f.tags_all, vec!["landscape"]);
+        assert_eq!(f.libraries, vec!["/lib"]);
+        assert_eq!(f.formats, vec!["mp4"]);
+        assert_eq!(f.name_like.as_deref(), Some("city"));
+        assert_eq!(f.min_width, Some(1920));
+        assert_eq!(f.min_height, Some(1080));
+        assert_eq!(f.min_size, Some(1024));
+        assert_eq!(f.max_size, Some(4096));
+        assert_eq!(f.aspect, Some(AspectClass::Landscape));
+    }
+
+    #[test]
+    fn grouped_wallpaper_rules_support_or_between_groups() {
+        let entry = WallpaperEntry {
+            id: "1".into(),
+            name: "City Sunset".into(),
+            wp_type: "video".into(),
+            resource: "/lib/video/city.mp4".into(),
+            preview: None,
+            metadata: HashMap::new(),
+            description: None,
+            tags: vec![],
+            external_id: None,
+            size: Some(4_096),
+            width: Some(1920),
+            height: Some(1080),
+            format: Some("mp4".into()),
+            plugin_name: "fs".into(),
+            library_root: "/lib/video".into(),
+        };
+
+        let mut name_rule = pb::WallpaperFilterRule {
+            r#type: pb::WallpaperFilterType::Name as i32,
+            group: 0,
+            payload: None,
+        };
+        name_rule.payload = Some(pb::wallpaper_filter_rule::Payload::StringFilter(
+            pb::WallpaperStringFilter {
+                value: "forest".into(),
+                condition: pb::StringCondition::Contains as i32,
+            },
+        ));
+
+        let mut width_rule = pb::WallpaperFilterRule {
+            r#type: pb::WallpaperFilterType::Width as i32,
+            group: 1,
+            payload: None,
+        };
+        width_rule.payload = Some(pb::wallpaper_filter_rule::Payload::IntFilter(
+            pb::WallpaperIntFilter {
+                value: 1900,
+                condition: pb::IntCondition::GreaterEqual as i32,
+            },
+        ));
+
+        let and_logics = vec![pb::FilterLogic {
+            op: pb::LogicOp::And as i32,
+            group_a: 0,
+            group_b: 1,
+        }];
+        assert!(!wallpaper_rules_match(
+            &entry,
+            &[name_rule.clone(), width_rule.clone()],
+            &and_logics
+        ));
+
+        let or_logics = vec![pb::FilterLogic {
+            op: pb::LogicOp::Or as i32,
+            group_a: 0,
+            group_b: 1,
+        }];
+        assert!(wallpaper_rules_match(
+            &entry,
+            &[name_rule, width_rule],
+            &or_logics
+        ));
     }
 }

@@ -36,9 +36,7 @@ impl Daemon1 {
 
     #[zbus(property)]
     fn ws_port(&self) -> u16 {
-        self.app
-            .ws_port
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.app.ws_port.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     #[zbus(property)]
@@ -127,7 +125,9 @@ impl Daemon1 {
 
     /// Snapshot of every persisted playlist. Tuple shape
     /// `(id, name, source_kind, mode, interval_secs, item_count)`.
-    async fn list_playlists(&self) -> zbus::fdo::Result<Vec<(i64, String, String, String, u32, u32)>> {
+    async fn list_playlists(
+        &self,
+    ) -> zbus::fdo::Result<Vec<(i64, String, String, String, u32, u32)>> {
         let rows = control::list_playlists(&self.app)
             .await
             .map_err(zbus::fdo::Error::from)?;

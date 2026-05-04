@@ -205,11 +205,13 @@ pub fn check_setting_bounds(
 ) -> std::result::Result<(), ValidationError> {
     match schema.ty {
         SettingType::U32 => {
-            let v: u32 = coerced.parse().map_err(|_| ValidationError::BadSettingType {
-                key: key.to_string(),
-                expected: SettingType::U32,
-                got: coerced.to_string(),
-            })?;
+            let v: u32 = coerced
+                .parse()
+                .map_err(|_| ValidationError::BadSettingType {
+                    key: key.to_string(),
+                    expected: SettingType::U32,
+                    got: coerced.to_string(),
+                })?;
             if let Some(min_v) = schema.min.as_ref().and_then(toml_to_u32) {
                 if v < min_v {
                     return Err(out_of_range(key, coerced, schema));
@@ -223,11 +225,13 @@ pub fn check_setting_bounds(
             Ok(())
         }
         SettingType::F32 => {
-            let v: f32 = coerced.parse().map_err(|_| ValidationError::BadSettingType {
-                key: key.to_string(),
-                expected: SettingType::F32,
-                got: coerced.to_string(),
-            })?;
+            let v: f32 = coerced
+                .parse()
+                .map_err(|_| ValidationError::BadSettingType {
+                    key: key.to_string(),
+                    expected: SettingType::F32,
+                    got: coerced.to_string(),
+                })?;
             if let Some(min_v) = schema.min.as_ref().and_then(toml_to_f32) {
                 if v < min_v {
                     return Err(out_of_range(key, coerced, schema));
@@ -264,11 +268,12 @@ pub fn coerce_and_validate(
     raw: &str,
     schema: &SettingDef,
 ) -> std::result::Result<String, ValidationError> {
-    let coerced = coerce_setting(raw, schema.ty).ok_or_else(|| ValidationError::BadSettingType {
-        key: key.to_string(),
-        expected: schema.ty,
-        got: raw.to_string(),
-    })?;
+    let coerced =
+        coerce_setting(raw, schema.ty).ok_or_else(|| ValidationError::BadSettingType {
+            key: key.to_string(),
+            expected: schema.ty,
+            got: raw.to_string(),
+        })?;
     check_setting_bounds(key, &coerced, schema)?;
     Ok(coerced)
 }
@@ -543,8 +548,7 @@ mod schema_tests {
             loop_file = { type = "string", default = "inf",  identity = false }
             hwdec     = { type = "string", default = "auto", identity = false }
         "#;
-        let manifest: RendererManifest =
-            toml::from_str(src).expect("manifest parses");
+        let manifest: RendererManifest = toml::from_str(src).expect("manifest parses");
         assert_eq!(manifest.renderer.spawn_version, Some(1));
         assert_eq!(manifest.renderer.extras, vec!["subtitle".to_string()]);
         assert_eq!(manifest.renderer.settings.len(), 2);
@@ -596,7 +600,11 @@ mod schema_tests {
     fn coerce_and_validate_choices_hit_and_miss() {
         let s = SettingDef {
             choices: Some(vec!["auto".into(), "vaapi".into(), "nvdec".into()]),
-            ..test_setting(SettingType::String, toml::Value::String("auto".into()), false)
+            ..test_setting(
+                SettingType::String,
+                toml::Value::String("auto".into()),
+                false,
+            )
         };
         assert_eq!(coerce_and_validate("hwdec", "vaapi", &s).unwrap(), "vaapi");
         let err = coerce_and_validate("hwdec", "ssh", &s).expect_err("must error");
@@ -612,5 +620,4 @@ mod schema_tests {
         let err = coerce_and_validate("fps", "lots", &s).expect_err("must error");
         assert!(matches!(err, ValidationError::BadSettingType { .. }));
     }
-
 }

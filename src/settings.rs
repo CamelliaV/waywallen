@@ -163,6 +163,11 @@ pub struct GlobalSettings {
     /// no per-display override. Drives the daemon-side projection of
     /// `set_config` rects.
     pub layout: LayoutDefaults,
+    /// Compact JSON blob carrying the UI's wallpaper-browser filter
+    /// editor state. The daemon persists it verbatim and hands it back
+    /// over `SettingsGet/SettingsChanged`; execution still uses the
+    /// structured filter rules sent on `WallpaperList`.
+    pub wallpaper_filter_json: String,
 }
 
 impl Default for GlobalSettings {
@@ -175,6 +180,7 @@ impl Default for GlobalSettings {
             playlist_mode: "sequential".to_string(),
             rotation_secs: 0,
             layout: LayoutDefaults::default(),
+            wallpaper_filter_json: String::new(),
         }
     }
 }
@@ -349,7 +355,9 @@ impl SettingsStore {
         ResolvedLayout {
             fillmode: prefs.and_then(|p| p.fillmode).unwrap_or(defaults.fillmode),
             align: prefs.and_then(|p| p.align).unwrap_or(defaults.align),
-            clear_rgba: prefs.and_then(|p| p.clear_rgba).unwrap_or(defaults.clear_rgba),
+            clear_rgba: prefs
+                .and_then(|p| p.clear_rgba)
+                .unwrap_or(defaults.clear_rgba),
         }
     }
 
@@ -447,10 +455,7 @@ impl SettingsStore {
 
         if let Some(parent) = self.path.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                log::warn!(
-                    "settings create_dir_all {}: {e}",
-                    parent.display()
-                );
+                log::warn!("settings create_dir_all {}: {e}", parent.display());
                 self.dirty.store(true, Ordering::SeqCst);
                 return;
             }
@@ -514,13 +519,8 @@ impl SettingsStore {
     /// cycle. Returns `true` when a flush is needed (caller may also
     /// want to publish a `SettingsChanged` event so any already-
     /// connected WS client sees the merged truth).
-    pub fn reconcile(
-        &self,
-        registry: &crate::plugin::renderer_registry::RendererRegistry,
-    ) -> bool {
-        use crate::plugin::renderer_registry::{
-            check_setting_bounds, SettingDef, SettingType,
-        };
+    pub fn reconcile(&self, registry: &crate::plugin::renderer_registry::RendererRegistry) -> bool {
+        use crate::plugin::renderer_registry::{check_setting_bounds, SettingDef, SettingType};
 
         let mut changed = false;
         let mut g = self.inner.write().expect("settings poisoned");
@@ -764,11 +764,7 @@ baz = "7"
     };
     use std::path::PathBuf;
 
-    fn schema_setting(
-        ty: SettingType,
-        default: toml::Value,
-        identity: bool,
-    ) -> SettingDef {
+    fn schema_setting(ty: SettingType, default: toml::Value, identity: bool) -> SettingDef {
         SettingDef {
             ty,
             default,

@@ -3,7 +3,7 @@
 //! Decoupled from the scan/sync hot path: when an item lands in the DB
 //! without media metadata (size/width/height/format), this module runs
 //! the probe out-of-band on a periodic tick (and once after each sync).
- 
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -103,11 +103,9 @@ pub async fn run_pending(
         let abs = join_path(&library_root, &item.path);
         let probe_for_blocking = probe.clone();
         let abs_for_blocking = abs.clone();
-        let meta = tokio::task::spawn_blocking(move || {
-            probe_for_blocking.probe(&abs_for_blocking)
-        })
-        .await
-        .with_context(|| format!("probe join id={}", item.id))?;
+        let meta = tokio::task::spawn_blocking(move || probe_for_blocking.probe(&abs_for_blocking))
+            .await
+            .with_context(|| format!("probe join id={}", item.id))?;
 
         if meta.width.is_some() || meta.height.is_some() {
             stats.gained_dimensions += 1;
@@ -117,11 +115,7 @@ pub async fn run_pending(
         }
 
         if let Err(e) = repo::update_item_media(db, item.id, &meta).await {
-            log::warn!(
-                "probe write failed id={} path={}: {e:#}",
-                item.id,
-                abs
-            );
+            log::warn!("probe write failed id={} path={}: {e:#}", item.id, abs);
             stats.write_errors += 1;
             continue;
         }

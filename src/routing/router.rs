@@ -54,9 +54,7 @@ pub enum DisplayOutEvent {
     /// Bind the buffer pool currently published by `renderer`. The
     /// endpoint reads `renderer.bind_snapshot()` itself so the router
     /// doesn't have to clone fds for every subscriber.
-    Bind {
-        renderer: Arc<RendererHandle>,
-    },
+    Bind { renderer: Arc<RendererHandle> },
     /// Retire the named buffer pool generation.
     Unbind { buffer_generation: u64 },
     /// Update composition geometry / clear color.
@@ -468,10 +466,7 @@ impl Router {
     /// change so subscribed UIs refresh `effective_layout` /
     /// `layout_override` for every display. The argument is a
     /// pre-fetched snapshot to avoid a redundant lock round-trip.
-    pub fn emit_displays_replace_for_settings_change(
-        self: &Arc<Self>,
-        snap: Vec<DisplaySnapshot>,
-    ) {
+    pub fn emit_displays_replace_for_settings_change(self: &Arc<Self>, snap: Vec<DisplaySnapshot>) {
         self.emit(RouterEvent::DisplaysReplace(snap));
     }
 
@@ -520,7 +515,10 @@ impl Router {
                             router.on_renderer_bind(&rid).await;
                         }
                         Ok(EventMsg::FrameReady {
-                            image_index, seq, release_point, ..
+                            image_index,
+                            seq,
+                            release_point,
+                            ..
                         }) => {
                             router
                                 .on_renderer_frame(&rid, image_index, seq, release_point)
@@ -536,7 +534,9 @@ impl Router {
                             // NegotiateBuffers dispatch.
                             router.reconcile_buffer_flags().await;
                         }
-                        Ok(EventMsg::BindFailed { fourcc, modifier, .. }) => {
+                        Ok(EventMsg::BindFailed {
+                            fourcc, modifier, ..
+                        }) => {
                             // Iter 5: renderer rejected the picked
                             // (fourcc, modifier). Blacklist it on
                             // the producer side and re-pick.
@@ -595,16 +595,15 @@ impl Router {
     // Display lifecycle
     // ---------------------------------------------------------------
 
-    pub async fn register_display(
-        self: &Arc<Self>,
-        reg: DisplayRegistration,
-    ) -> DisplayHandle {
+    pub async fn register_display(self: &Arc<Self>, reg: DisplayRegistration) -> DisplayHandle {
         // One-time legacy migration: if the consumer advertised a v4
         // `instance_id` and there's still only a name-keyed entry from
         // v3 days, copy it to the instance_id key so subsequent
         // resolves hit the new key. The old name key is kept (don't
         // delete) so a roll-back to a v3 client still finds its prefs.
-        if let (Some(iid), Some(settings)) = (reg.instance_id.as_deref(), self.settings.get().cloned()) {
+        if let (Some(iid), Some(settings)) =
+            (reg.instance_id.as_deref(), self.settings.get().cloned())
+        {
             if settings.display_prefs(iid).is_none() {
                 if let Some(legacy) = settings.display_prefs(&reg.name) {
                     let iid_owned = iid.to_string();
@@ -793,7 +792,11 @@ impl Router {
     /// Whether this renderer is currently in the paused set (zero
     /// enabled links). Returns `false` for unknown ids.
     pub async fn is_paused(self: &Arc<Self>, renderer_id: &str) -> bool {
-        self.inner.lock().await.paused_renderers.contains(renderer_id)
+        self.inner
+            .lock()
+            .await
+            .paused_renderers
+            .contains(renderer_id)
     }
 
     /// Subscribe to router events (display add/change/remove). The
@@ -843,8 +846,7 @@ impl Router {
                         .all(|l| !l.enabled)
                 })
                 .collect();
-            let lone =
-                inner.displays.is_empty() && inner.table.renderer_ids().len() == 1;
+            let lone = inner.displays.is_empty() && inner.table.renderer_ids().len() == 1;
             (cs, lone)
         };
         for rid in &candidates {
@@ -1207,9 +1209,9 @@ impl Router {
     ) -> bool {
         let payload: Option<(DisplayId, ProjectedConfig)> = {
             let mut inner = self.inner.lock().await;
-            let changed = inner.table.update_link_geometry(
-                link_id, src, dst, transform, clear_rgba, z_order,
-            );
+            let changed = inner
+                .table
+                .update_link_geometry(link_id, src, dst, transform, clear_rgba, z_order);
             if !changed {
                 return false;
             }
@@ -1461,8 +1463,10 @@ impl Router {
         // covering all consumers; for the prototype "last write wins"
         // is fine because layer-shell + waywallen-display lib advertise
         // identical hardcoded LINEAR caps.)
-        let mut by_renderer: std::collections::HashMap<RendererId, crate::negotiate::NegotiatedScheme> =
-            std::collections::HashMap::new();
+        let mut by_renderer: std::collections::HashMap<
+            RendererId,
+            crate::negotiate::NegotiatedScheme,
+        > = std::collections::HashMap::new();
         for p in pairs {
             match crate::negotiate::pick(&p.producer, &p.consumer) {
                 Ok(scheme) => {
@@ -1516,10 +1520,8 @@ impl Router {
             display_links.iter().filter(|l| l.enabled).count() <= 1,
             "display {display_id} has multiple enabled links — invariant violated"
         );
-        let target: Option<(Link, Arc<RendererHandle>, u64)> = display_links
-            .into_iter()
-            .find(|l| l.enabled)
-            .and_then(|l| {
+        let target: Option<(Link, Arc<RendererHandle>, u64)> =
+            display_links.into_iter().find(|l| l.enabled).and_then(|l| {
                 let renderer = inner.table.get_renderer(&l.renderer_id)?;
                 let gen = renderer
                     .bind_snapshot()
@@ -1664,13 +1666,29 @@ fn project_link(
     // multi-link composition has set explicit rects on the Link.
     let (rtex_w, rtex_h) = renderer.texture_size();
     let resolve_src = |r: LinkSrcRect| -> (f32, f32, f32, f32) {
-        let w = if r.w.is_infinite() { rtex_w as f32 } else { r.w };
-        let h = if r.h.is_infinite() { rtex_h as f32 } else { r.h };
+        let w = if r.w.is_infinite() {
+            rtex_w as f32
+        } else {
+            r.w
+        };
+        let h = if r.h.is_infinite() {
+            rtex_h as f32
+        } else {
+            r.h
+        };
         (r.x, r.y, w, h)
     };
     let resolve_dst = |r: LinkDstRect| -> (f32, f32, f32, f32) {
-        let w = if r.w.is_infinite() { info.width as f32 } else { r.w };
-        let h = if r.h.is_infinite() { info.height as f32 } else { r.h };
+        let w = if r.w.is_infinite() {
+            info.width as f32
+        } else {
+            r.w
+        };
+        let h = if r.h.is_infinite() {
+            info.height as f32
+        } else {
+            r.h
+        };
         (r.x, r.y, w, h)
     };
     let (sx, sy, sw, sh) = resolve_src(link.src_rect);
@@ -1743,7 +1761,11 @@ mod tests {
 
         // No renderers registered → every link vector is empty.
         for d in &snap {
-            assert!(d.links.is_empty(), "display {} unexpectedly has links", d.id);
+            assert!(
+                d.links.is_empty(),
+                "display {} unexpectedly has links",
+                d.id
+            );
         }
     }
 
@@ -2031,9 +2053,7 @@ mod tests {
     // Active-sync RouterEvent::Renderer* emission
     // -----------------------------------------------------------------
 
-    async fn recv_event(
-        rx: &mut broadcast::Receiver<RouterEvent>,
-    ) -> Option<RouterEvent> {
+    async fn recv_event(rx: &mut broadcast::Receiver<RouterEvent>) -> Option<RouterEvent> {
         match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
             Ok(Ok(ev)) => Some(ev),
             _ => None,
@@ -2092,7 +2112,9 @@ mod tests {
 
         let mut saw_paused = false;
         for _ in 0..6 {
-            let Some(evt) = recv_event(&mut rx).await else { break };
+            let Some(evt) = recv_event(&mut rx).await else {
+                break;
+            };
             if let RouterEvent::RendererUpsert(snap) = evt {
                 if snap.id == "R1" && snap.status == RendererStatus::Paused {
                     saw_paused = true;
@@ -2100,7 +2122,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw_paused, "expected R1 Paused upsert after display unregister");
+        assert!(
+            saw_paused,
+            "expected R1 Paused upsert after display unregister"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -2109,11 +2134,7 @@ mod tests {
 
     /// Build a single-fourcc PeerCaps with the given (modifier,plane_count) list.
     /// Mirrors `negotiate::tests::caps_one_fourcc` but in scope here.
-    fn build_caps(
-        fourcc: u32,
-        mods: &[(u64, u32)],
-        uuid_byte: u8,
-    ) -> crate::negotiate::PeerCaps {
+    fn build_caps(fourcc: u32, mods: &[(u64, u32)], uuid_byte: u8) -> crate::negotiate::PeerCaps {
         use crate::negotiate as N;
         let mod_count = mods.len() as u32;
         let modifiers: Vec<u64> = mods.iter().map(|(m, _)| *m).collect();
@@ -2129,7 +2150,10 @@ mod tests {
             &plane_counts,
             &dev_words,
             &drv_words,
-            DrmNode { major: 226, minor: 128 },
+            DrmNode {
+                major: 226,
+                minor: 128,
+            },
             N::SYNC_SYNCOBJ_TIMELINE,
             N::DEFAULT_COLOR,
             N::MEM_HINT_HOST_VISIBLE,
@@ -2151,11 +2175,17 @@ mod tests {
         add_stub_renderer(&mgr, &router, "R1").await;
         let h = router.register_display(reg("D1", 1920, 1080)).await;
 
-        let caps = build_caps(N::DRM_FORMAT_ABGR8888, &[(N::DRM_FORMAT_MOD_LINEAR, 1)], 0xAA);
+        let caps = build_caps(
+            N::DRM_FORMAT_ABGR8888,
+            &[(N::DRM_FORMAT_MOD_LINEAR, 1)],
+            0xAA,
+        );
         router.set_consumer_caps(h.id, caps).await;
 
         let nl: u64 = 0x0100_0000_0000_0001;
-        router.on_consumer_bind_failed(h.id, N::DRM_FORMAT_ABGR8888, nl).await;
+        router
+            .on_consumer_bind_failed(h.id, N::DRM_FORMAT_ABGR8888, nl)
+            .await;
 
         let inner = router.inner.lock().await;
         let state = inner.displays.get(&h.id).unwrap();
@@ -2180,7 +2210,9 @@ mod tests {
         router.register_renderer(h.clone()).await;
 
         assert_eq!(h.test_blacklist_len(), 0);
-        router.on_renderer_bind_failed("R1", N::DRM_FORMAT_ABGR8888, nl).await;
+        router
+            .on_renderer_bind_failed("R1", N::DRM_FORMAT_ABGR8888, nl)
+            .await;
         assert_eq!(h.test_blacklist_len(), 1);
     }
 
@@ -2300,8 +2332,14 @@ mod tests {
         };
         let cfg = project_link(&link, &renderer, &info, 42, &layout);
         assert_eq!(cfg.config_generation, 42);
-        assert_eq!((cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h), (0.0, 0.0, 1920.0, 1080.0));
-        assert_eq!((cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h), (0.0, 0.0, 1280.0, 720.0));
+        assert_eq!(
+            (cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h),
+            (0.0, 0.0, 1920.0, 1080.0)
+        );
+        assert_eq!(
+            (cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h),
+            (0.0, 0.0, 1280.0, 720.0)
+        );
         assert_eq!(cfg.clear_rgba, [0.0, 0.0, 0.0, 1.0]);
     }
 
@@ -2336,8 +2374,18 @@ mod tests {
         let renderer = RendererHandle::test_stub("r1", "scene");
         let info = make_info("eDP-1", 1280, 720);
         let mut link = make_link("r1", 1);
-        link.src_rect = super::super::table::LinkSrcRect { x: 100.0, y: 200.0, w: 800.0, h: 600.0 };
-        link.dst_rect = super::super::table::LinkDstRect { x: 50.0, y: 75.0, w: 400.0, h: 300.0 };
+        link.src_rect = super::super::table::LinkSrcRect {
+            x: 100.0,
+            y: 200.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        link.dst_rect = super::super::table::LinkDstRect {
+            x: 50.0,
+            y: 75.0,
+            w: 400.0,
+            h: 300.0,
+        };
         link.clear_rgba = [1.0, 0.0, 0.0, 1.0];
         let layout = ResolvedLayout {
             // Even with PreserveAspectFit, explicit geometry must win.
@@ -2346,8 +2394,14 @@ mod tests {
             clear_rgba: [0.0, 0.0, 1.0, 1.0],
         };
         let cfg = project_link(&link, &renderer, &info, 1, &layout);
-        assert_eq!((cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h), (100.0, 200.0, 800.0, 600.0));
-        assert_eq!((cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h), (50.0, 75.0, 400.0, 300.0));
+        assert_eq!(
+            (cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h),
+            (100.0, 200.0, 800.0, 600.0)
+        );
+        assert_eq!(
+            (cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h),
+            (50.0, 75.0, 400.0, 300.0)
+        );
         // Explicit clear color survives.
         assert_eq!(cfg.clear_rgba, [1.0, 0.0, 0.0, 1.0]);
     }
@@ -2378,7 +2432,9 @@ mod tests {
     /// Drain everything currently sitting on the rx and return only the
     /// last `SetConfig` payload — the one the consumer would actually
     /// observe after the wire flush.
-    fn last_set_config(rx: &mut mpsc::UnboundedReceiver<DisplayOutEvent>) -> Option<ProjectedConfig> {
+    fn last_set_config(
+        rx: &mut mpsc::UnboundedReceiver<DisplayOutEvent>,
+    ) -> Option<ProjectedConfig> {
         let mut out = None;
         while let Ok(ev) = rx.try_recv() {
             if let DisplayOutEvent::SetConfig(c) = ev {

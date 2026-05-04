@@ -229,10 +229,7 @@ impl AvFormatProbe {
                 if name_ptr.is_null() {
                     None
                 } else {
-                    CStr::from_ptr(name_ptr)
-                        .to_str()
-                        .ok()
-                        .map(|s| s.to_owned())
+                    CStr::from_ptr(name_ptr).to_str().ok().map(|s| s.to_owned())
                 }
             } else {
                 None
@@ -341,18 +338,18 @@ fn try_load_libavformat() -> Option<LoadedLib> {
 
         // Detect ABI major. `avformat_version` returns
         // (MAJOR << 16) | (MINOR << 8) | MICRO.
-        let major = match unsafe {
-            library.get::<unsafe extern "C" fn() -> c_uint>(b"avformat_version\0")
-        } {
-            Ok(sym) => (unsafe { sym() }) >> 16,
-            Err(_) => {
-                warn!(
-                    target: "waywallen::media_probe",
-                    "{soname}: avformat_version missing; size-only fallback"
-                );
-                continue;
-            }
-        };
+        let major =
+            match unsafe { library.get::<unsafe extern "C" fn() -> c_uint>(b"avformat_version\0") }
+            {
+                Ok(sym) => (unsafe { sym() }) >> 16,
+                Err(_) => {
+                    warn!(
+                        target: "waywallen::media_probe",
+                        "{soname}: avformat_version missing; size-only fallback"
+                    );
+                    continue;
+                }
+            };
 
         let layout = match major {
             60 => CODECPAR_FFMPEG_6,
@@ -471,18 +468,18 @@ mod tests {
         // Minimal valid 8-bit mono PCM WAV (silence, 1 sample).
         let header: [u8; 44] = [
             b'R', b'I', b'F', b'F', // ChunkID
-            37, 0, 0, 0,           // ChunkSize = 36 + data(1)
+            37, 0, 0, 0, // ChunkSize = 36 + data(1)
             b'W', b'A', b'V', b'E', // Format
             b'f', b'm', b't', b' ', // Subchunk1ID
-            16, 0, 0, 0,           // Subchunk1Size = 16
-            1, 0,                  // AudioFormat = PCM
-            1, 0,                  // NumChannels = 1
-            0x44, 0xAC, 0, 0,     // SampleRate = 44100
-            0x44, 0xAC, 0, 0,     // ByteRate
-            1, 0,                  // BlockAlign
-            8, 0,                  // BitsPerSample
+            16, 0, 0, 0, // Subchunk1Size = 16
+            1, 0, // AudioFormat = PCM
+            1, 0, // NumChannels = 1
+            0x44, 0xAC, 0, 0, // SampleRate = 44100
+            0x44, 0xAC, 0, 0, // ByteRate
+            1, 0, // BlockAlign
+            8, 0, // BitsPerSample
             b'd', b'a', b't', b'a', // Subchunk2ID
-            1, 0, 0, 0,           // Subchunk2Size = 1
+            1, 0, 0, 0, // Subchunk2Size = 1
         ];
         tmp.write_all(&header).expect("write wav header");
         tmp.write_all(&[0x80]).expect("write sample");

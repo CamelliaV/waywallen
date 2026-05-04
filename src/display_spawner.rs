@@ -42,7 +42,9 @@ pub fn detect_de() -> DeCaps {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok().filter(|s| !s.is_empty());
+    let wayland_display = std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .filter(|s| !s.is_empty());
     let is_wayland_session = std::env::var("XDG_SESSION_TYPE")
         .map(|v| v.eq_ignore_ascii_case("wayland"))
         .unwrap_or(false);
@@ -98,10 +100,7 @@ pub fn builtin_display_defs() -> Vec<DisplayDef> {
         bin: layer_shell_bin,
         de: vec!["niri".to_string()],
         priority: 50,
-        requires: vec![
-            "wlr-layer-shell".to_string(),
-            "linux-dmabuf-v4".to_string(),
-        ],
+        requires: vec!["wlr-layer-shell".to_string(), "linux-dmabuf-v4".to_string()],
         extra_args: Vec::new(),
         spawn: SpawnMode::Daemon,
     });
@@ -144,7 +143,11 @@ pub fn pick_backend(reg: &DisplayRegistry, caps: &DeCaps) -> PickOutcome {
         }
         // Any token in XDG_CURRENT_DESKTOP matching any `de` entry.
         for want in &d.de {
-            if caps.xdg_desktop.iter().any(|t| t.eq_ignore_ascii_case(want)) {
+            if caps
+                .xdg_desktop
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(want))
+            {
                 return true;
             }
         }
@@ -161,9 +164,7 @@ pub fn pick_backend(reg: &DisplayRegistry, caps: &DeCaps) -> PickOutcome {
         }
         // Skip Plasma-targeted backends here — the KDE branch above owns
         // those. Prevents `kde-plasma` from leaking into a non-KDE pick.
-        if d.de.iter().any(|t| t.eq_ignore_ascii_case("kde"))
-            && !d.de.iter().any(|t| t == "*")
-        {
+        if d.de.iter().any(|t| t.eq_ignore_ascii_case("kde")) && !d.de.iter().any(|t| t == "*") {
             continue;
         }
         if !d.requires.is_empty() && !caps.probed_globals.is_empty() {
@@ -478,7 +479,10 @@ mod tests {
             xdg_desktop: vec!["hyprland".into()],
             ..Default::default()
         };
-        assert!(matches!(pick_backend(&registry(), &caps), PickOutcome::None));
+        assert!(matches!(
+            pick_backend(&registry(), &caps),
+            PickOutcome::None
+        ));
     }
 
     #[test]
