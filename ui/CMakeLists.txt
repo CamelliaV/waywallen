@@ -133,6 +133,7 @@ set(QML_FILES
   qml/component/filter/WallpaperFilter.qml
   qml/component/settings/SettingField.qml
   qml/component/settings/PluginSettingsPopup.qml
+  qml/dialog/DaemonNotRunDialog.qml
   qml/dialog/WallpaperFilterDialog.qml
   qml/page/WallpaperPage.qml
   qml/page/WallpaperCard.qml

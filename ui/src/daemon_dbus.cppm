@@ -5,8 +5,10 @@ module;
 #    include "waywallen/daemon_dbus.moc"
 #endif
 
+#include <QtCore/QVariantList>
 #include <QtCore/QVariantMap>
 #include <QtDBus/QDBusConnection>
+#include <QtDBus/QDBusMessage>
 #include <QtDBus/QDBusServiceWatcher>
 #include <QtDBus/QDBusVariant>
 
@@ -21,28 +23,53 @@ class DaemonDBusClient : public QObject {
     QML_ELEMENT
     QML_SINGLETON
 
-    Q_PROPERTY(quint16 wsPort READ wsPort NOTIFY wsPortChanged FINAL)
-    Q_PROPERTY(bool daemonAvailable READ daemonAvailable NOTIFY daemonAvailabilityChanged FINAL)
-
 public:
+    /// Single source of truth for the daemon's reachability + compatibility.
+    /// All UI bindings read this; per-flag bool variables are deliberately
+    /// avoided so the state machine has one anchor.
+    enum Status {
+        Disconnected,    ///< Service not on bus, or DBus call failed.
+        VersionMissing,  ///< Daemon online but lacks Version property (old build).
+        VersionMismatch, ///< Daemon's Version differs from kRequiredDaemonVersion.
+        Connected,       ///< WsPort + Version both ok and compatible.
+    };
+    Q_ENUM(Status)
+
+    Q_PROPERTY(Status   status         READ status         NOTIFY statusChanged FINAL)
+    Q_PROPERTY(quint16  wsPort         READ wsPort         NOTIFY wsPortChanged FINAL)
+    Q_PROPERTY(quint32  daemonVersion  READ daemonVersion  NOTIFY statusChanged FINAL)
+    /// Convenience derived from `status == Connected`.
+    Q_PROPERTY(bool     daemonAvailable READ daemonAvailable NOTIFY statusChanged FINAL)
+
     explicit DaemonDBusClient(QObject* parent = nullptr);
     ~DaemonDBusClient() override;
 
     static DaemonDBusClient* create(QQmlEngine*, QJSEngine*);
     static DaemonDBusClient* instance();
 
-    quint16 wsPort() const { return m_ws_port; }
-    bool    daemonAvailable() const { return m_available; }
+    Status   status() const          { return m_status; }
+    quint16  wsPort() const          { return m_ws_port; }
+    quint32  daemonVersion() const   { return m_daemon_version; }
+    bool     daemonAvailable() const { return m_status == Connected; }
 
-    /// Synchronously read ws_port property; updates cache and emits signal on change.
-    /// Returns current value (0 if unavailable).
+    /// Synchronous round-trip: read WsPort, then probe Version. Updates
+    /// `status` to one of {Disconnected, VersionMissing, VersionMismatch,
+    /// Connected}. Returns the freshly-read port (0 on failure).
     Q_INVOKABLE quint16 refreshWsPort();
 
     /// Spawn the daemon as a detached child. Returns true on success.
     Q_INVOKABLE bool launchDaemon();
 
+    /// Enumerate processes whose /proc/<pid>/comm equals "waywallen". Each
+    /// entry: { "pid": uint, "cmdline": string }. Used by the "daemon not
+    /// run" dialog to surface zombies before relaunching.
+    Q_INVOKABLE QVariantList listWaywallenProcesses();
+
+    /// Send SIGTERM to `pid`. Returns true if kill(2) succeeded.
+    Q_INVOKABLE bool killProcess(quint32 pid);
+
+    Q_SIGNAL void statusChanged();
     Q_SIGNAL void wsPortChanged(quint16 port);
-    Q_SIGNAL void daemonAvailabilityChanged(bool available);
 
 private:
     Q_SLOT void on_service_registered(const QString& service);
@@ -54,13 +81,17 @@ private:
                                       const QStringList& invalidated);
 
     void setup_subscriptions();
-    void update_availability(bool available);
+    void set_status(Status s);
     void set_ws_port(quint16 port);
+
+    /// `org.freedesktop.DBus.Properties.Get(kInterface, prop)`.
+    QDBusMessage call_get(const QString& prop);
 
     QDBusConnection      m_bus;
     QDBusServiceWatcher* m_watcher { nullptr };
     quint16              m_ws_port { 0 };
-    bool                 m_available { false };
+    quint32              m_daemon_version { 0 };
+    Status               m_status { Disconnected };
 };
 
 } // namespace waywallen

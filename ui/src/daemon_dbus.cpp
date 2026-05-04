@@ -1,7 +1,12 @@
 module;
 #include "waywallen/daemon_dbus.moc.h"
 
+#include <csignal>
+#include <sys/types.h>
+
 #include <QtCore/QDebug>
+#include <QtCore/QDir>
+#include <QtCore/QFile>
 #include <QtCore/QProcess>
 #include <QtCore/QVariant>
 #include <QtDBus/QDBusConnection>
@@ -24,7 +29,25 @@ constexpr const char* kObjectPath  = "/org/waywallen/waywallen/Daemon";
 constexpr const char* kInterface   = "org.waywallen.waywallen.Daemon1";
 constexpr const char* kPropsIface  = "org.freedesktop.DBus.Properties";
 
+// Wire/protocol version the UI requires from the daemon. Bump in lockstep
+// with the daemon's `Version` property when the IPC contract changes.
+constexpr quint32 kRequiredDaemonVersion = 1;
+
 DaemonDBusClient* g_instance { nullptr };
+
+bool is_unknown_property_error(const QString& name) {
+    // Different DBus stacks report the missing-property condition with
+    // slightly different error names; accept both.
+    return name == QLatin1String("org.freedesktop.DBus.Error.UnknownProperty") ||
+           name == QLatin1String("org.freedesktop.DBus.Error.InvalidArgs");
+}
+
+QVariant unwrap_variant(QVariant v) {
+    if (v.canConvert<QDBusVariant>()) {
+        v = v.value<QDBusVariant>().variant();
+    }
+    return v;
+}
 
 } // namespace
 
@@ -55,15 +78,14 @@ DaemonDBusClient::DaemonDBusClient(QObject* parent)
 
     setup_subscriptions();
 
-    // Initial availability + port probe.
+    // Initial probe — refreshWsPort drives the full state-machine update.
     auto iface = m_bus.interface();
     bool registered =
         iface && iface->isServiceRegistered(QString::fromLatin1(kBusName)).value();
     if (registered) {
-        update_availability(true);
         refreshWsPort();
     } else {
-        update_availability(false);
+        set_status(Disconnected);
     }
 }
 
@@ -84,7 +106,6 @@ void DaemonDBusClient::setup_subscriptions() {
     connect(m_watcher, &QDBusServiceWatcher::serviceUnregistered, this,
             &DaemonDBusClient::on_service_unregistered);
 
-    // Ready signal
     bool ok = m_bus.connect(QString::fromLatin1(kBusName),
                             QString::fromLatin1(kObjectPath),
                             QString::fromLatin1(kInterface),
@@ -95,7 +116,6 @@ void DaemonDBusClient::setup_subscriptions() {
         qWarning("DaemonDBusClient: failed to subscribe to Ready signal");
     }
 
-    // ShuttingDown signal
     ok = m_bus.connect(QString::fromLatin1(kBusName),
                        QString::fromLatin1(kObjectPath),
                        QString::fromLatin1(kInterface),
@@ -106,7 +126,6 @@ void DaemonDBusClient::setup_subscriptions() {
         qWarning("DaemonDBusClient: failed to subscribe to ShuttingDown signal");
     }
 
-    // PropertiesChanged signal (filter by interface in slot).
     ok = m_bus.connect(QString::fromLatin1(kBusName),
                        QString::fromLatin1(kObjectPath),
                        QString::fromLatin1(kPropsIface),
@@ -118,40 +137,71 @@ void DaemonDBusClient::setup_subscriptions() {
     }
 }
 
-quint16 DaemonDBusClient::refreshWsPort() {
-    if (! m_bus.isConnected()) {
-        return 0;
-    }
-
+QDBusMessage DaemonDBusClient::call_get(const QString& prop) {
     QDBusMessage msg = QDBusMessage::createMethodCall(QString::fromLatin1(kBusName),
                                                      QString::fromLatin1(kObjectPath),
                                                      QString::fromLatin1(kPropsIface),
                                                      QStringLiteral("Get"));
-    msg << QString::fromLatin1(kInterface) << QStringLiteral("WsPort");
+    msg << QString::fromLatin1(kInterface) << prop;
+    return m_bus.call(msg, QDBus::Block, 2000);
+}
 
-    // Short timeout; if daemon isn't there we want to fail fast.
-    QDBusMessage reply = m_bus.call(msg, QDBus::Block, 2000);
-    if (reply.type() != QDBusMessage::ReplyMessage) {
-        qDebug("DaemonDBusClient: WsPort read failed: %s",
-               qPrintable(reply.errorMessage()));
-        update_availability(false);
+quint16 DaemonDBusClient::refreshWsPort() {
+    if (! m_bus.isConnected()) {
         set_ws_port(0);
+        set_status(Disconnected);
         return 0;
     }
 
-    const auto args = reply.arguments();
-    if (args.isEmpty()) {
+    // Step 1: WsPort. Failure here means daemon is gone / unreachable.
+    QDBusMessage port_reply = call_get(QStringLiteral("WsPort"));
+    if (port_reply.type() != QDBusMessage::ReplyMessage) {
+        qDebug("DaemonDBusClient: WsPort read failed: %s",
+               qPrintable(port_reply.errorMessage()));
+        set_ws_port(0);
+        set_status(Disconnected);
+        return 0;
+    }
+    {
+        const auto args = port_reply.arguments();
+        if (! args.isEmpty()) {
+            bool ok = false;
+            quint16 port = static_cast<quint16>(unwrap_variant(args.front()).toUInt(&ok));
+            if (ok) set_ws_port(port);
+        }
+    }
+
+    // Step 2: Version. Best-effort — UnknownProperty/InvalidArgs maps to
+    // VersionMissing (old daemon predating the version handshake).
+    QDBusMessage ver_reply = call_get(QStringLiteral("Version"));
+    if (ver_reply.type() != QDBusMessage::ReplyMessage) {
+        if (is_unknown_property_error(ver_reply.errorName())) {
+            m_daemon_version = 0;
+            set_status(VersionMissing);
+        } else {
+            qDebug("DaemonDBusClient: Version read failed: %s (%s)",
+                   qPrintable(ver_reply.errorName()),
+                   qPrintable(ver_reply.errorMessage()));
+            set_status(Disconnected);
+        }
         return m_ws_port;
     }
-    QVariant inner = args.front();
-    if (inner.canConvert<QDBusVariant>()) {
-        inner = inner.value<QDBusVariant>().variant();
-    }
-    bool ok = false;
-    quint16 port = static_cast<quint16>(inner.toUInt(&ok));
-    if (ok) {
-        update_availability(true);
-        set_ws_port(port);
+    {
+        const auto args = ver_reply.arguments();
+        if (args.isEmpty()) {
+            m_daemon_version = 0;
+            set_status(VersionMissing);
+            return m_ws_port;
+        }
+        bool ok = false;
+        quint32 version = unwrap_variant(args.front()).toUInt(&ok);
+        if (! ok) {
+            m_daemon_version = 0;
+            set_status(VersionMismatch);
+            return m_ws_port;
+        }
+        m_daemon_version = version;
+        set_status(version == kRequiredDaemonVersion ? Connected : VersionMismatch);
     }
     return m_ws_port;
 }
@@ -165,30 +215,73 @@ bool DaemonDBusClient::launchDaemon() {
     return ok;
 }
 
+QVariantList DaemonDBusClient::listWaywallenProcesses() {
+    QVariantList out;
+    QDir proc(QStringLiteral("/proc"));
+    const QStringList entries = proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString& entry : entries) {
+        bool is_pid = false;
+        const quint32 pid = entry.toUInt(&is_pid);
+        if (! is_pid) continue;
+
+        QFile comm_file(QStringLiteral("/proc/%1/comm").arg(entry));
+        if (! comm_file.open(QIODevice::ReadOnly)) continue;
+        QByteArray comm = comm_file.readAll().trimmed();
+        if (comm != QByteArrayLiteral("waywallen")) continue;
+
+        QFile cmdline_file(QStringLiteral("/proc/%1/cmdline").arg(entry));
+        QString cmdline;
+        if (cmdline_file.open(QIODevice::ReadOnly)) {
+            QByteArray raw = cmdline_file.readAll();
+            // /proc cmdline is NUL-separated argv with a trailing NUL.
+            for (char& c : raw) {
+                if (c == '\0') c = ' ';
+            }
+            cmdline = QString::fromLocal8Bit(raw).trimmed();
+        }
+        if (cmdline.isEmpty()) cmdline = QString::fromLatin1(comm);
+
+        QVariantMap row;
+        row.insert(QStringLiteral("pid"), pid);
+        row.insert(QStringLiteral("cmdline"), cmdline);
+        out.append(row);
+    }
+    return out;
+}
+
+bool DaemonDBusClient::killProcess(quint32 pid) {
+    if (pid == 0) return false;
+    if (::kill(static_cast<pid_t>(pid), SIGTERM) != 0) {
+        qWarning("DaemonDBusClient: kill(%u, SIGTERM) failed: %s",
+                 pid, qPrintable(QString::fromLocal8Bit(strerror(errno))));
+        return false;
+    }
+    return true;
+}
+
 void DaemonDBusClient::on_service_registered(const QString& service) {
     if (service != QString::fromLatin1(kBusName)) return;
     qDebug("DaemonDBusClient: daemon registered on bus");
-    update_availability(true);
     refreshWsPort();
 }
 
 void DaemonDBusClient::on_service_unregistered(const QString& service) {
     if (service != QString::fromLatin1(kBusName)) return;
     qDebug("DaemonDBusClient: daemon unregistered from bus");
-    update_availability(false);
     set_ws_port(0);
+    m_daemon_version = 0;
+    set_status(Disconnected);
 }
 
 void DaemonDBusClient::on_ready() {
     qDebug("DaemonDBusClient: Ready signal received");
-    update_availability(true);
     refreshWsPort();
 }
 
 void DaemonDBusClient::on_shutting_down() {
     qDebug("DaemonDBusClient: ShuttingDown signal received");
-    update_availability(false);
-    // Do not clear port aggressively here; NameOwnerChanged will follow.
+    set_status(Disconnected);
+    // Keep m_ws_port until NameOwnerChanged confirms the unregister.
 }
 
 void DaemonDBusClient::on_properties_changed(const QString&     iface,
@@ -197,21 +290,17 @@ void DaemonDBusClient::on_properties_changed(const QString&     iface,
     if (iface != QString::fromLatin1(kInterface)) return;
     auto it = changed.find(QStringLiteral("WsPort"));
     if (it == changed.end()) return;
-    QVariant v = it.value();
-    if (v.canConvert<QDBusVariant>()) {
-        v = v.value<QDBusVariant>().variant();
-    }
     bool ok = false;
-    quint16 port = static_cast<quint16>(v.toUInt(&ok));
+    quint16 port = static_cast<quint16>(unwrap_variant(it.value()).toUInt(&ok));
     if (ok) {
         set_ws_port(port);
     }
 }
 
-void DaemonDBusClient::update_availability(bool available) {
-    if (m_available == available) return;
-    m_available = available;
-    Q_EMIT daemonAvailabilityChanged(m_available);
+void DaemonDBusClient::set_status(Status s) {
+    if (m_status == s) return;
+    m_status = s;
+    Q_EMIT statusChanged();
 }
 
 void DaemonDBusClient::set_ws_port(quint16 port) {

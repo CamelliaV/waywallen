@@ -81,29 +81,7 @@ MD.ApplicationWindow {
         }
     }
 
-    MD.Popup {
-        id: m_disconnect_overlay
-        visible: !W.DaemonDBusClient.daemonAvailable
-        closePolicy: T.Popup.NoAutoClose
-        dim: true
-        modal: true
-        x: Math.round((parent.width - width) / 2)
-        y: Math.round((parent.height - height) / 2)
-        parent: T.Overlay.overlay
-        bottomPadding: 24
-        contentItem: Column {
-            spacing: 24
-            MD.DialogHeader {
-                // anchors.horizontalCenter: parent.horizontalCenter
-                title: "daemon not run"
-            }
-
-            MD.DialogButtonBox {
-                width: parent.width
-                standardButtons: T.DialogButtonBox.Retry
-            }
-        }
-    }
+    W.DaemonNotRunDialog {}
 
     ColumnLayout {
         anchors.fill: parent
