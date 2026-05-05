@@ -50,6 +50,9 @@ else
     BUILD_TAG="$WAYWALLEN_VERSION"
 fi
 
+# Clean APPDIR
+rm -rf "$APPDIR"
+
 APPIMAGE_OUT="$PROJECT_DIR/waywallen-$BUILD_TAG-x86_64.AppImage"
 step "Building AppImage tagged as $BUILD_TAG"
 
@@ -138,12 +141,11 @@ step "Compiling (first build ~10–20 min; subsequent runs are incremental and f
 cmake --build "$BUILD_DIR" --parallel
 
 step "Installing into AppDir: $APPDIR"
-rm -rf "$APPDIR"
 cmake --install "$BUILD_DIR"
 
 # ---- 4.5 Build open-wallpaper-engine (waywallen-wescene-renderer) ----
 # Pinned commit; bump explicitly when integrating new owe changes.
-OWE_COMMIT="9248679e58db95e246a551deca218a5d34e0eb47"
+OWE_COMMIT="be6548a89255f8a34d18b7664cf00c33cbedb065"
 OWE_SRC="$PROJECT_DIR/build/_owe-src"
 OWE_BUILD="$PROJECT_DIR/build/_owe-build"
 
@@ -174,11 +176,13 @@ cmake -S "$OWE_SRC" -B "$OWE_BUILD" \
     -DCMAKE_PREFIX_PATH="$INSTALL_DIR;$CONDA_PREFIX" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
     -DBUILD_WAYWALLEN_HOST=ON \
+    -DBUILD_WEWEB=ON \
     -DBUILD_QML=OFF
 
 step "Compiling open-wallpaper-engine"
 cmake --build   "$OWE_BUILD" --parallel
 cmake --install "$OWE_BUILD"
+strip "$INSTALL_DIR/share/waywallen/weweb"/*.so
 
 # # ---- 5. Fetch linuxdeploy / appimagetool (cached on first run under build/_tools) ----
 mkdir -p "$TOOLS_DIR"
@@ -263,6 +267,7 @@ cp -v "$CONDA_PREFIX/lib/libstdc++.so.6" "$APPDIR/usr/lib/"
 cp -v "$CONDA_PREFIX/lib/libgcc_s.so.1" "$APPDIR/usr/lib/"
 cp -rv "$APPDIR/usr/lib/qt6/qml/." "$APPDIR/usr/qml/"
 rm -rf "$APPDIR/usr/lib/qt6"
+rm -rf "$APPDIR/lib"/libQt6QuickDialogs*
 
 # ---- 8. Drop unused QuickControls2 styles (native libs + QML modules) ----
 step "Pruning unused QuickControls2 styles"

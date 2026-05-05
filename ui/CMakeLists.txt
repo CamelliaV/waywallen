@@ -32,6 +32,12 @@ if("${QT_INSTALL_QML}" STREQUAL "")
   set(QT_INSTALL_QML "${CMAKE_INSTALL_LIBDIR}/qt6/qml")
 endif()
 
+# cubeb
+set(BUILD_TESTS OFF)
+set(BUILD_TOOLS OFF)
+set(BUNDLE_SPEEX ON)
+set(USE_SANITIZERS OFF)
+set(USE_WINMM OFF)
 include(${CMAKE_SOURCE_DIR}/cmake/FetchDeps.cmake)
 fetchdeps(${CMAKE_SOURCE_DIR}/deps.json)
 
