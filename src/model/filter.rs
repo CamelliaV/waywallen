@@ -331,7 +331,7 @@ mod tests {
                 ty: "image",
                 display_name: "City",
                 preview_path: None,
-                description: None,
+                description: Some("sunset skyline"),
                 external_id: None,
                 size: Some(2048),
                 width: Some(1920),
@@ -446,5 +446,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn wallpaper_name_contains_matches_description_via_fts() {
+        let db = seed().await;
+
+        let mut name = pb::WallpaperFilterRule {
+            r#type: pb::WallpaperFilterType::Name as i32,
+            group: 0,
+            payload: None,
+        };
+        name.payload = Some(pb::wallpaper_filter_rule::Payload::StringFilter(
+            pb::WallpaperStringFilter {
+                value: "skyline".into(),
+                condition: pb::StringCondition::Contains as i32,
+            },
+        ));
+
+        let condition = wallpaper_filters_to_condition(&[name], &[]).unwrap();
+        let rows = item::Entity::find()
+            .find_also_related(library::Entity)
+            .filter(condition)
+            .all(&db)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0.display_name, "City");
     }
 }

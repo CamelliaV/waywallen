@@ -11,6 +11,7 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
+        drop_fts_table_and_triggers(db, "item").await?;
         create_fts_table_and_triggers(db, "item", &["display_name", "description"]).await?;
         rebuild_fts_table(db, "item").await?;
         Ok(())
@@ -19,6 +20,8 @@ impl MigrationTrait for Migration {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
         drop_fts_table_and_triggers(db, "item").await?;
+        create_fts_table_and_triggers(db, "item", &["display_name"]).await?;
+        rebuild_fts_table(db, "item").await?;
         Ok(())
     }
 }
