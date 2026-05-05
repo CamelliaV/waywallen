@@ -18,7 +18,7 @@ use crate::error::{ok_response, Error};
 use crate::events::GlobalEvent;
 use crate::ipc::proto::ControlMsg;
 use crate::model::repo;
-use crate::playlist;
+use crate::queue;
 use crate::renderer_manager;
 use crate::routing::{DisplaySnapshot, LibrarySnapshot, RendererSnapshot, RouterEvent};
 use crate::settings::{
@@ -50,84 +50,9 @@ pub async fn serve(state: Arc<AppState>, addr: &str) -> Result<()> {
     fut.await
 }
 
-fn settings_filter_state_from_pb(
-    filters: &[pb::WallpaperFilterRule],
-    logics: &[pb::FilterLogic],
-) -> WallpaperFilterState {
-    WallpaperFilterState {
-        filters: filters.iter().map(settings_rule_from_pb).collect(),
-        filter_logics: logics
-            .iter()
-            .map(|logic| FilterLogicState {
-                op: logic.op,
-                group_a: logic.group_a,
-                group_b: logic.group_b,
-            })
-            .collect(),
-    }
-}
-
-fn settings_rule_from_pb(rule: &pb::WallpaperFilterRule) -> WallpaperFilterRuleState {
-    WallpaperFilterRuleState {
-        r#type: rule.r#type,
-        group: rule.group,
-        string_filter: rule.payload.as_ref().and_then(|payload| match payload {
-            pb::wallpaper_filter_rule::Payload::StringFilter(f) => {
-                Some(WallpaperStringFilterState {
-                    value: f.value.clone(),
-                    condition: f.condition,
-                })
-            }
-            _ => None,
-        }),
-        int_filter: rule.payload.as_ref().and_then(|payload| match payload {
-            pb::wallpaper_filter_rule::Payload::IntFilter(f) => Some(WallpaperIntFilterState {
-                value: f.value,
-                condition: f.condition,
-            }),
-            _ => None,
-        }),
-        aspect_filter: rule.payload.as_ref().and_then(|payload| match payload {
-            pb::wallpaper_filter_rule::Payload::AspectFilter(f) => {
-                Some(WallpaperAspectFilterState {
-                    value: f.value,
-                    condition: f.condition,
-                })
-            }
-            _ => None,
-        }),
-    }
-}
-
-fn pb_rule_from_settings(rule: WallpaperFilterRuleState) -> pb::WallpaperFilterRule {
-    let payload = if let Some(f) = rule.string_filter {
-        Some(pb::wallpaper_filter_rule::Payload::StringFilter(
-            pb::WallpaperStringFilter {
-                value: f.value,
-                condition: f.condition,
-            },
-        ))
-    } else if let Some(f) = rule.int_filter {
-        Some(pb::wallpaper_filter_rule::Payload::IntFilter(
-            pb::WallpaperIntFilter {
-                value: f.value,
-                condition: f.condition,
-            },
-        ))
-    } else {
-        rule.aspect_filter.map(|f| {
-            pb::wallpaper_filter_rule::Payload::AspectFilter(pb::WallpaperAspectFilter {
-                value: f.value,
-                condition: f.condition,
-            })
-        })
-    };
-    pb::WallpaperFilterRule {
-        r#type: rule.r#type,
-        group: rule.group,
-        payload,
-    }
-}
+// Filter state ↔ pb conversion lives on `WallpaperFilterState` itself
+// (`to_pb` / `from_pb`) so both ws_server and control share the same
+// roundtrip. See `crate::settings`.
 
 async fn accept_loop(state: Arc<AppState>, listener: TcpListener) -> Result<()> {
     loop {
@@ -578,6 +503,7 @@ fn global_event_to_pb(e: &GlobalEvent, state: &Arc<AppState>) -> Option<pb::Even
         GlobalEvent::SettingsChanged => {
             let snap = state.settings.snapshot();
             let filter_state = snap.global.wallpaper_filter.clone();
+            let (wallpaper_filters, wallpaper_filter_logics) = filter_state.to_pb();
             let layout_defaults = pb::LayoutPrefs {
                 fillmode: fillmode_to_pb(snap.global.layout.fillmode) as i32,
                 align: align_to_pb(snap.global.layout.align) as i32,
@@ -589,20 +515,8 @@ fn global_event_to_pb(e: &GlobalEvent, state: &Arc<AppState>) -> Option<pb::Even
                         target_extent: snap.global.target_extent,
                         render_size_policy: render_size_policy_to_pb(snap.global.render_size_policy)
                             as i32,
-                        wallpaper_filters: filter_state
-                            .filters
-                            .into_iter()
-                            .map(pb_rule_from_settings)
-                            .collect(),
-                        wallpaper_filter_logics: filter_state
-                            .filter_logics
-                            .into_iter()
-                            .map(|logic| pb::FilterLogic {
-                                op: logic.op,
-                                group_a: logic.group_a,
-                                group_b: logic.group_b,
-                            })
-                            .collect(),
+                        wallpaper_filters,
+                        wallpaper_filter_logics,
                         layout_defaults: Some(layout_defaults),
                     }),
                     plugins: snap
@@ -1111,9 +1025,23 @@ async fn dispatch_inner(
             // rotator both go through `control::apply_wallpaper_by_id`
             // and don't have this hole).
             {
-                let mut playlist = state.playlist.lock().await;
-                playlist.locate(&entry.id);
-                playlist.current = Some(entry.id.clone());
+                let mut q = state.queue.lock().await;
+                q.current = Some(entry.id.clone());
+                if !entry.library_root.is_empty() {
+                    if let Some(rel) =
+                        crate::queue::relative_under_root(&entry.library_root, &entry.resource)
+                    {
+                        if let Ok(Some(it)) = crate::model::repo::find_item_by_library_path(
+                            &state.db,
+                            &entry.library_root,
+                            &rel,
+                        )
+                        .await
+                        {
+                            q.last_db_id = Some(it.id);
+                        }
+                    }
+                }
             }
             state.settings.update(|s| {
                 s.global.last_wallpaper = Some(entry.id.clone());
@@ -1134,6 +1062,7 @@ async fn dispatch_inner(
         Req::SettingsGet(_) => {
             let snap = state.settings.snapshot();
             let filter_state = snap.global.wallpaper_filter.clone();
+            let (wallpaper_filters, wallpaper_filter_logics) = filter_state.to_pb();
             let layout_defaults = pb::LayoutPrefs {
                 fillmode: fillmode_to_pb(snap.global.layout.fillmode) as i32,
                 align: align_to_pb(snap.global.layout.align) as i32,
@@ -1144,20 +1073,8 @@ async fn dispatch_inner(
                     target_extent: snap.global.target_extent,
                     render_size_policy: render_size_policy_to_pb(snap.global.render_size_policy)
                         as i32,
-                    wallpaper_filters: filter_state
-                        .filters
-                        .into_iter()
-                        .map(pb_rule_from_settings)
-                        .collect(),
-                    wallpaper_filter_logics: filter_state
-                        .filter_logics
-                        .into_iter()
-                        .map(|logic| pb::FilterLogic {
-                            op: logic.op,
-                            group_a: logic.group_a,
-                            group_b: logic.group_b,
-                        })
-                        .collect(),
+                    wallpaper_filters,
+                    wallpaper_filter_logics,
                     layout_defaults: Some(layout_defaults),
                 }),
                 plugins: snap
@@ -1220,7 +1137,7 @@ async fn dispatch_inner(
                 if let Some(g) = r.global.as_ref() {
                     s.global.target_extent = g.target_extent;
                     s.global.render_size_policy = render_size_policy_from_pb(g.render_size_policy);
-                    s.global.wallpaper_filter = settings_filter_state_from_pb(
+                    s.global.wallpaper_filter = WallpaperFilterState::from_pb(
                         &g.wallpaper_filters,
                         &g.wallpaper_filter_logics,
                     );
@@ -1245,6 +1162,9 @@ async fn dispatch_inner(
                     previous_filter,
                     new_filter
                 );
+                // Filter change invalidates the queue's shuffle round
+                // (candidate set changed); next step rematerializes.
+                state.queue.lock().await.reset_shuffle_round();
             }
             let new_layout = state.settings.snapshot().global.layout.clone();
             if new_layout != prev_layout {
@@ -1404,124 +1324,23 @@ async fn dispatch_inner(
             Res::LibraryRemove(pb::Empty {})
         }
 
-        // ---- playlists ----------------------------------------------------
-        Req::PlaylistList(_) => {
-            let rows = control::list_playlists(&state).await?;
-            let playlists = rows
-                .into_iter()
-                .map(|s| pb::PlaylistSummary {
-                    id: s.id,
-                    name: s.name,
-                    source_kind: s.source_kind,
-                    mode: mode_str_to_pb(&s.mode) as i32,
-                    interval_secs: s.interval_secs.max(0) as u32,
-                    item_count: s.item_count,
-                })
-                .collect();
-            Res::PlaylistList(pb::PlaylistListResponse { playlists })
-        }
-
-        Req::PlaylistCreate(r) => {
-            let mode = pb_mode_to_enum(r.mode);
-            let args = repo::PlaylistCreateArgs {
-                name: &r.name,
-                source_kind: repo::PLAYLIST_KIND_CURATED,
-                filter_json: None,
-                mode: mode.as_str(),
-                interval_secs: r.interval_secs as i32,
-                shuffle_seed: 0,
-            };
-            // repo::create_playlist returns Error::PlaylistInvalid on
-            // smart/curated invariant violation; let it propagate.
-            let p = repo::create_playlist(&state.db, args).await?;
-            if !r.item_ids.is_empty() {
-                if let Err(e) = repo::set_playlist_items(&state.db, p.id, &r.item_ids).await {
-                    // Best-effort cleanup so we don't leave an empty
-                    // stub the user didn't ask for.
-                    let _ = repo::delete_playlist(&state.db, p.id).await;
-                    return Err(Error::from(e));
-                }
-            }
-            Res::PlaylistCreate(pb::PlaylistCreateResponse { id: p.id })
-        }
-
-        Req::PlaylistDelete(r) => {
-            repo::delete_playlist(&state.db, r.id).await?;
-            // If the deleted playlist was active, fall back to All so
-            // the rotator + step path don't keep walking a dangling
-            // cursor. Failure here used to be `log::warn`-and-swallow;
-            // now it propagates so the caller learns the daemon is in
-            // a half-state (row deleted, rotator still pointed at it).
-            let active = state.playlist.lock().await.active_id;
-            if active == Some(r.id) {
-                control::deactivate_playlist(&state).await?;
-            }
-            Res::PlaylistDelete(pb::Empty {})
-        }
-
-        Req::PlaylistRename(r) => {
-            repo::rename_playlist(&state.db, r.id, &r.name).await?;
-            Res::PlaylistRename(pb::Empty {})
-        }
-
-        Req::PlaylistSetItems(r) => {
-            repo::set_playlist_items(&state.db, r.id, &r.item_ids).await?;
-            // If this playlist is the active one, refresh its resolved
-            // id list immediately so the cursor sees the new
-            // membership without waiting for a rescan. Reactivation
-            // failure now propagates instead of being silently warned.
-            let active = state.playlist.lock().await.active_id;
-            if active == Some(r.id) {
-                control::activate_playlist(&state, r.id).await?;
-            }
-            Res::PlaylistSetItems(pb::Empty {})
-        }
-
-        Req::PlaylistSetMode(r) => {
-            let mode = pb_mode_to_enum(r.mode);
-            repo::set_playlist_mode(&state.db, r.id, mode.as_str()).await?;
-            let active = state.playlist.lock().await.active_id;
-            if active == Some(r.id) {
-                // `set_mode` returns `()` — no error to propagate.
-                control::set_mode(&state, mode).await;
-            }
-            Res::PlaylistSetMode(pb::Empty {})
-        }
-
-        Req::PlaylistSetInterval(r) => {
-            repo::set_playlist_interval(&state.db, r.id, r.interval_secs as i32).await?;
-            let active = state.playlist.lock().await.active_id;
-            if active == Some(r.id) {
-                // `set_rotation_interval` returns `()`.
-                control::set_rotation_interval(&state, r.interval_secs).await;
-            }
-            Res::PlaylistSetInterval(pb::Empty {})
-        }
-
-        Req::PlaylistActivate(r) => {
-            // playlist::resolve::activate now returns Error::PlaylistNotFound
-            // directly; the typed code flows through control::activate_playlist
-            // and out here without an adapter.
-            control::activate_playlist(&state, r.id).await?;
-            // Adopt the row's stored interval into the live rotator so
-            // a rotating playlist starts ticking on activate without a
-            // separate set_interval round-trip. The lookup may legitimately
-            // return None mid-activation; the row's absence is advisory
-            // only (activate already succeeded) — but a real DB error
-            // should still surface.
-            if let Some(row) = repo::find_playlist(&state.db, r.id).await? {
-                control::set_rotation_interval(&state, row.interval_secs.max(0) as u32).await;
-            }
-            Res::PlaylistActivate(pb::Empty {})
-        }
-
-        Req::PlaylistDeactivate(_) => {
-            control::deactivate_playlist(&state).await?;
-            Res::PlaylistDeactivate(pb::Empty {})
+        // ---- queue status (user-saved playlists removed) -----------------
+        Req::PlaylistList(_)
+        | Req::PlaylistCreate(_)
+        | Req::PlaylistDelete(_)
+        | Req::PlaylistRename(_)
+        | Req::PlaylistSetItems(_)
+        | Req::PlaylistSetMode(_)
+        | Req::PlaylistSetInterval(_)
+        | Req::PlaylistActivate(_)
+        | Req::PlaylistDeactivate(_) => {
+            return Err(Error::FailedPrecondition(
+                "user-saved playlists removed; queue plays from settings.wallpaper_filter".into(),
+            ));
         }
 
         Req::PlaylistStatus(_) => {
-            let s = control::playlist_status(&state).await;
+            let s = control::queue_status(&state).await;
             Res::PlaylistStatus(pb::PlaylistStatusResponse {
                 active_id: s.active_id.unwrap_or(0),
                 mode: mode_str_to_pb(&s.mode) as i32,
@@ -1535,22 +1354,22 @@ async fn dispatch_inner(
     })
 }
 
-/// Decode the proto enum integer into the internal `playlist::Mode`.
+/// Decode the proto enum integer into the internal `queue::Mode`.
 /// `Unspecified` (0) and any unrecognized variant default to
 /// Sequential — that's what a client that forgot the field meant.
-fn pb_mode_to_enum(v: i32) -> playlist::Mode {
+fn pb_mode_to_enum(v: i32) -> queue::Mode {
     match pb::PlaylistMode::try_from(v).unwrap_or(pb::PlaylistMode::Unspecified) {
-        pb::PlaylistMode::Shuffle => playlist::Mode::Shuffle,
-        pb::PlaylistMode::Random => playlist::Mode::Random,
-        _ => playlist::Mode::Sequential,
+        pb::PlaylistMode::Shuffle => queue::Mode::Shuffle,
+        pb::PlaylistMode::Random => queue::Mode::Random,
+        _ => queue::Mode::Sequential,
     }
 }
 
 fn mode_str_to_pb(s: &str) -> pb::PlaylistMode {
-    match playlist::Mode::from_str(s) {
-        Some(playlist::Mode::Sequential) => pb::PlaylistMode::Sequential,
-        Some(playlist::Mode::Shuffle) => pb::PlaylistMode::Shuffle,
-        Some(playlist::Mode::Random) => pb::PlaylistMode::Random,
+    match queue::Mode::from_str(s) {
+        Some(queue::Mode::Sequential) => pb::PlaylistMode::Sequential,
+        Some(queue::Mode::Shuffle) => pb::PlaylistMode::Shuffle,
+        Some(queue::Mode::Random) => pb::PlaylistMode::Random,
         None => pb::PlaylistMode::Unspecified,
     }
 }

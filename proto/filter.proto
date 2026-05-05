@@ -19,6 +19,10 @@ enum WallpaperFilterType {
   WALLPAPER_FILTER_TYPE_HEIGHT = 6;
   WALLPAPER_FILTER_TYPE_SIZE = 7;
   WALLPAPER_FILTER_TYPE_ASPECT = 8;
+  // Tag predicates use the StringFilter payload; `value` is one tag
+  // name, `condition` is IS / IS_NOT (CONTAINS variants are nonsensical
+  // for tag membership and treated as IS / IS_NOT respectively).
+  WALLPAPER_FILTER_TYPE_TAG = 9;
 }
 
 enum StringCondition {

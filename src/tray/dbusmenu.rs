@@ -167,8 +167,8 @@ impl DBusMenu {
             }
             ID_SHUFFLE => {
                 let was_on = matches!(
-                    app.playlist.lock().await.mode,
-                    crate::playlist::Mode::Shuffle
+                    app.queue.lock().await.mode,
+                    crate::queue::Mode::Shuffle
                 );
                 control::set_shuffle(&app, !was_on).await;
             }
@@ -254,9 +254,9 @@ struct MenuState {
 }
 
 async fn snapshot_menu_state(app: &Arc<AppState>) -> MenuState {
-    let mode = app.playlist.lock().await.mode;
+    let mode = app.queue.lock().await.mode;
     MenuState {
-        is_shuffle: matches!(mode, crate::playlist::Mode::Shuffle),
+        is_shuffle: matches!(mode, crate::queue::Mode::Shuffle),
         rotation_secs: app.rotation.interval(),
     }
 }
@@ -437,8 +437,8 @@ async fn dispatch_click(app: &Arc<AppState>, id: i32) -> zbus::fdo::Result<()> {
         }
         ID_SHUFFLE => {
             let was_on = matches!(
-                app.playlist.lock().await.mode,
-                crate::playlist::Mode::Shuffle
+                app.queue.lock().await.mode,
+                crate::queue::Mode::Shuffle
             );
             control::set_shuffle(app, !was_on).await;
         }

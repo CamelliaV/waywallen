@@ -14,7 +14,7 @@ mod events;
 mod ipc;
 mod model;
 mod negotiate;
-mod playlist;
+mod queue;
 mod plugin;
 mod probe;
 mod renderer_manager;
@@ -39,11 +39,11 @@ pub struct AppState {
     pub router: Arc<routing::Router>,
     pub settings: Arc<settings::SettingsStore>,
     pub db: sea_orm::DatabaseConnection,
-    pub playlist: tokio::sync::Mutex<control::PlaylistState>,
+    pub queue: tokio::sync::Mutex<control::QueueState>,
     /// Auto-rotation control handle. The rotator task watches the
     /// matching `watch::Receiver` and re-arms its deadline on every
     /// edit (interval change OR a manual `kick`).
-    pub rotation: playlist::RotationHandle,
+    pub rotation: queue::RotationHandle,
     /// Process-wide event bus. Carries phase markers (sources ready,
     /// display ready) the boot coordinator gates on, plus transient
     /// notifications about restore success/failure.
@@ -55,6 +55,11 @@ pub struct AppState {
     /// relying on transient start/end notifications.
     pub scan_in_progress: std::sync::atomic::AtomicBool,
     pub ui_path: std::sync::Mutex<Option<PathBuf>>,
+    /// Live DBus connection. Populated by `dbus_iface::serve` once the
+    /// `Daemon1` interface is published. Used by control:: setters to
+    /// emit `PropertiesChanged` when mutations bypass the DBus method
+    /// path (rotator auto-tick, WS settings updates).
+    pub dbus_conn: std::sync::Mutex<Option<Arc<zbus::Connection>>>,
     /// Daemon-wide shutdown signal. Flips `false` → `true` exactly once.
     /// Every long-lived task (display endpoint, per-client loops, tray,
     /// ws server) should race its work against
@@ -279,7 +284,7 @@ async fn async_main() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx_for_tasks) = tokio::sync::watch::channel(false);
     let task_mgr = tasks::TaskManager::spawn(shutdown_rx_for_tasks);
 
-    let (rotation_handle, rotation_rx) = playlist::rotator::make_handle();
+    let (rotation_handle, rotation_rx) = queue::rotator::make_handle();
 
     let source_snapshot = Arc::new(tokio::sync::RwLock::new(
         plugin::source_snapshot::SourceSnapshot::default(),
@@ -292,12 +297,13 @@ async fn async_main() -> anyhow::Result<()> {
         router: router.clone(),
         settings: settings_store,
         db: db.clone(),
-        playlist: tokio::sync::Mutex::new(control::PlaylistState::default()),
+        queue: tokio::sync::Mutex::new(control::QueueState::default()),
         rotation: rotation_handle,
         events: events::EventBus::default(),
         ws_port: std::sync::atomic::AtomicU16::new(0),
         scan_in_progress: std::sync::atomic::AtomicBool::new(false),
         ui_path: std::sync::Mutex::new(None),
+        dbus_conn: std::sync::Mutex::new(None),
         shutdown: shutdown_tx,
         tasks: task_mgr.clone(),
         probe: probe.clone(),
@@ -615,6 +621,7 @@ async fn async_main() -> anyhow::Result<()> {
     )
     .await
     .context("publish DBus interface")?;
+    *state.dbus_conn.lock().unwrap() = Some(dbus_conn.clone());
     if let Err(e) = dbus_iface::emit_ready(&dbus_conn).await {
         log::warn!("DBus Ready emit failed: {e}");
     }

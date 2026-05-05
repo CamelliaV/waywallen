@@ -150,7 +150,35 @@ pub fn wallpaper_filter_to_condition(filter: &pb::WallpaperFilterRule) -> Option
             ),
             _ => None,
         },
+        pb::WallpaperFilterType::Tag => match filter.payload.as_ref() {
+            Some(Payload::StringFilter(f)) => tag_condition_to_condition(
+                &f.value,
+                pb::StringCondition::try_from(f.condition)
+                    .unwrap_or(pb::StringCondition::Unspecified),
+            ),
+            _ => None,
+        },
         pb::WallpaperFilterType::Unspecified => None,
+    }
+}
+
+/// Tag membership predicate. SQLite COLLATE NOCASE handles case
+/// insensitivity for tag names. CONTAINS / CONTAINS_NOT are nonsensical
+/// for tag membership so we collapse them onto IS / IS_NOT.
+fn tag_condition_to_condition(tag: &str, cond: pb::StringCondition) -> Option<Condition> {
+    let tag_quoted = sqlite_quote(tag);
+    let exists = format!(
+        "EXISTS (SELECT 1 FROM item_tag JOIN tag ON tag.id = item_tag.tag_id \
+         WHERE item_tag.item_id = item.id AND tag.name = {tag_quoted} COLLATE NOCASE)"
+    );
+    match cond {
+        pb::StringCondition::Is | pb::StringCondition::Contains => {
+            Some(Condition::all().add(Expr::cust(exists)))
+        }
+        pb::StringCondition::IsNot | pb::StringCondition::ContainsNot => {
+            Some(Condition::all().add(Expr::cust(format!("NOT {exists}"))))
+        }
+        pb::StringCondition::Unspecified => None,
     }
 }
 

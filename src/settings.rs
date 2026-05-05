@@ -147,17 +147,13 @@ pub struct GlobalSettings {
     /// hard-coding a 16:9 assumption.
     pub render_size_policy: RenderSizePolicy,
     pub last_wallpaper: Option<String>,
-    /// DB id of the playlist to activate on startup. `None` (default)
-    /// = the All pseudo-playlist. Set/cleared via the playlist control
-    /// surfaces; persisted so the daemon restarts in the same mode.
-    pub active_playlist_id: Option<i64>,
-    /// `"sequential"` / `"shuffle"` / `"random"`. Carries across
-    /// restart for the All pseudo-playlist; for activated DB
-    /// playlists the row's own `mode` column wins.
-    pub playlist_mode: String,
-    /// Auto-rotation interval in seconds; `0` = disabled. Restored on
-    /// startup so the rotator picks the same cadence the user left
-    /// the daemon in.
+    /// Queue playback mode: `"sequential"` / `"shuffle"` / `"random"`.
+    /// Restored on startup so the rotator resumes the same behavior.
+    /// (Old configs may have this under `playlist_mode` — the alias
+    /// keeps them readable.)
+    #[serde(alias = "playlist_mode")]
+    pub queue_mode: String,
+    /// Auto-rotation interval in seconds; `0` = disabled.
     pub rotation_secs: u32,
     /// Default fillmode/align/clear color applied when a display has
     /// no per-display override. Drives the daemon-side projection of
@@ -184,8 +180,7 @@ impl Default for GlobalSettings {
             target_extent: 1080,
             render_size_policy: RenderSizePolicy::default(),
             last_wallpaper: None,
-            active_playlist_id: None,
-            playlist_mode: "sequential".to_string(),
+            queue_mode: "sequential".to_string(),
             rotation_secs: 0,
             layout: LayoutDefaults::default(),
             wallpaper_filter: WallpaperFilterState::default(),
@@ -237,6 +232,116 @@ pub struct WallpaperIntFilterState {
 pub struct WallpaperAspectFilterState {
     pub value: i32,
     pub condition: i32,
+}
+
+impl WallpaperFilterState {
+    /// Convert the persisted state into the proto rules + logics used
+    /// by `model::filter::wallpaper_filters_to_condition`.
+    pub fn to_pb(
+        &self,
+    ) -> (
+        Vec<crate::control_proto::WallpaperFilterRule>,
+        Vec<crate::control_proto::FilterLogic>,
+    ) {
+        use crate::control_proto as pb;
+        let rules = self
+            .filters
+            .iter()
+            .cloned()
+            .map(|rule| {
+                let payload = if let Some(f) = rule.string_filter {
+                    Some(pb::wallpaper_filter_rule::Payload::StringFilter(
+                        pb::WallpaperStringFilter {
+                            value: f.value,
+                            condition: f.condition,
+                        },
+                    ))
+                } else if let Some(f) = rule.int_filter {
+                    Some(pb::wallpaper_filter_rule::Payload::IntFilter(
+                        pb::WallpaperIntFilter {
+                            value: f.value,
+                            condition: f.condition,
+                        },
+                    ))
+                } else {
+                    rule.aspect_filter.map(|f| {
+                        pb::wallpaper_filter_rule::Payload::AspectFilter(
+                            pb::WallpaperAspectFilter {
+                                value: f.value,
+                                condition: f.condition,
+                            },
+                        )
+                    })
+                };
+                pb::WallpaperFilterRule {
+                    r#type: rule.r#type,
+                    group: rule.group,
+                    payload,
+                }
+            })
+            .collect();
+        let logics = self
+            .filter_logics
+            .iter()
+            .map(|logic| pb::FilterLogic {
+                op: logic.op,
+                group_a: logic.group_a,
+                group_b: logic.group_b,
+            })
+            .collect();
+        (rules, logics)
+    }
+
+    pub fn from_pb(
+        rules: &[crate::control_proto::WallpaperFilterRule],
+        logics: &[crate::control_proto::FilterLogic],
+    ) -> Self {
+        use crate::control_proto as pb;
+        Self {
+            filters: rules
+                .iter()
+                .map(|rule| WallpaperFilterRuleState {
+                    r#type: rule.r#type,
+                    group: rule.group,
+                    string_filter: rule.payload.as_ref().and_then(|p| match p {
+                        pb::wallpaper_filter_rule::Payload::StringFilter(f) => {
+                            Some(WallpaperStringFilterState {
+                                value: f.value.clone(),
+                                condition: f.condition,
+                            })
+                        }
+                        _ => None,
+                    }),
+                    int_filter: rule.payload.as_ref().and_then(|p| match p {
+                        pb::wallpaper_filter_rule::Payload::IntFilter(f) => {
+                            Some(WallpaperIntFilterState {
+                                value: f.value,
+                                condition: f.condition,
+                            })
+                        }
+                        _ => None,
+                    }),
+                    aspect_filter: rule.payload.as_ref().and_then(|p| match p {
+                        pb::wallpaper_filter_rule::Payload::AspectFilter(f) => {
+                            Some(WallpaperAspectFilterState {
+                                value: f.value,
+                                condition: f.condition,
+                            })
+                        }
+                        _ => None,
+                    }),
+                })
+                .collect(),
+            filter_logics: logics
+                .iter()
+                .map(|logic| FilterLogicState {
+                    op: logic.op,
+                    group_a: logic.group_a,
+                    group_b: logic.group_b,
+                })
+                .collect(),
+        }
+    }
 }
 
 fn serialize_wallpaper_filter_state<S>(

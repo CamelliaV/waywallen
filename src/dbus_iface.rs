@@ -42,12 +42,40 @@ impl Daemon1 {
     #[zbus(property)]
     async fn current_wallpaper_id(&self) -> String {
         self.app
-            .playlist
+            .queue
             .lock()
             .await
             .current
             .clone()
             .unwrap_or_default()
+    }
+
+    /// Live queue playback mode: `"sequential"`, `"shuffle"`, or
+    /// `"random"`. Setter persists to settings and emits
+    /// `PropertiesChanged`.
+    #[zbus(property)]
+    async fn queue_mode(&self) -> String {
+        self.app.queue.lock().await.mode.as_str().to_owned()
+    }
+
+    #[zbus(property)]
+    async fn set_queue_mode(&self, value: String) -> zbus::Result<()> {
+        let mode = crate::queue::Mode::from_str(&value).ok_or_else(|| {
+            zbus::Error::InvalidField
+        })?;
+        control::set_mode(&self.app, mode).await;
+        Ok(())
+    }
+
+    /// Auto-rotation interval in seconds; `0` disables.
+    #[zbus(property)]
+    fn rotation_secs(&self) -> u32 {
+        self.app.rotation.interval()
+    }
+
+    #[zbus(property)]
+    async fn set_rotation_secs(&self, secs: u32) {
+        control::set_rotation_interval(&self.app, secs).await;
     }
 
     async fn open_ui(&self) -> zbus::fdo::Result<()> {
@@ -108,49 +136,11 @@ impl Daemon1 {
         control::set_rotation_interval(&self.app, secs).await;
     }
 
-    /// Activate a persisted playlist by id. Loads its mode/filter and
-    /// resolves member ids against the current snapshot.
-    async fn activate_playlist(&self, id: i64) -> zbus::fdo::Result<()> {
-        control::activate_playlist(&self.app, id)
-            .await
-            .map_err(zbus::fdo::Error::from)
-    }
-
-    /// Switch back to the All pseudo-playlist.
-    async fn deactivate_playlist(&self) -> zbus::fdo::Result<()> {
-        control::deactivate_playlist(&self.app)
-            .await
-            .map_err(zbus::fdo::Error::from)
-    }
-
-    /// Snapshot of every persisted playlist. Tuple shape
-    /// `(id, name, source_kind, mode, interval_secs, item_count)`.
-    async fn list_playlists(
-        &self,
-    ) -> zbus::fdo::Result<Vec<(i64, String, String, String, u32, u32)>> {
-        let rows = control::list_playlists(&self.app)
-            .await
-            .map_err(zbus::fdo::Error::from)?;
-        Ok(rows
-            .into_iter()
-            .map(|s| {
-                (
-                    s.id,
-                    s.name,
-                    s.source_kind,
-                    s.mode,
-                    s.interval_secs.max(0) as u32,
-                    s.item_count,
-                )
-            })
-            .collect())
-    }
-
-    /// Live status of the active playlist. Tuple shape
+    /// Live status of the active queue. Tuple shape
     /// `(active_id, mode, interval_secs, current_id, position, count, is_smart)`.
     /// `active_id = 0` and `current_id = ""` represent absence.
-    async fn playlist_status(&self) -> (i64, String, u32, String, u32, u32, bool) {
-        let s = control::playlist_status(&self.app).await;
+    async fn queue_status(&self) -> (i64, String, u32, String, u32, u32, bool) {
+        let s = control::queue_status(&self.app).await;
         (
             s.active_id.unwrap_or(0),
             s.mode,
@@ -290,4 +280,63 @@ pub async fn emit_shutting_down(conn: &Connection) -> zbus::Result<()> {
         .interface::<_, Daemon1>(OBJECT_PATH)
         .await?;
     Daemon1::shutting_down(iface_ref.signal_context()).await
+}
+
+/// Snapshot of the dbus connection from `AppState`. Callers can take
+/// it across an await without holding the std::sync::Mutex.
+fn live_conn(app: &AppState) -> Option<Arc<Connection>> {
+    app.dbus_conn.lock().unwrap().clone()
+}
+
+pub async fn notify_queue_mode_changed(app: &AppState) {
+    let conn = match live_conn(app) {
+        Some(c) => c,
+        None => return,
+    };
+    let iface = match conn
+        .object_server()
+        .interface::<_, Daemon1>(OBJECT_PATH)
+        .await
+    {
+        Ok(i) => i,
+        Err(_) => return,
+    };
+    let inner = iface.get().await;
+    let _ = inner.queue_mode_changed(iface.signal_context()).await;
+}
+
+pub async fn notify_rotation_secs_changed(app: &AppState) {
+    let conn = match live_conn(app) {
+        Some(c) => c,
+        None => return,
+    };
+    let iface = match conn
+        .object_server()
+        .interface::<_, Daemon1>(OBJECT_PATH)
+        .await
+    {
+        Ok(i) => i,
+        Err(_) => return,
+    };
+    let inner = iface.get().await;
+    let _ = inner.rotation_secs_changed(iface.signal_context()).await;
+}
+
+pub async fn notify_current_wallpaper_id_changed(app: &AppState) {
+    let conn = match live_conn(app) {
+        Some(c) => c,
+        None => return,
+    };
+    let iface = match conn
+        .object_server()
+        .interface::<_, Daemon1>(OBJECT_PATH)
+        .await
+    {
+        Ok(i) => i,
+        Err(_) => return,
+    };
+    let inner = iface.get().await;
+    let _ = inner
+        .current_wallpaper_id_changed(iface.signal_context())
+        .await;
 }

@@ -5,7 +5,7 @@ pub mod events;
 pub mod ipc;
 pub mod model;
 pub mod negotiate;
-pub mod playlist;
+pub mod queue;
 pub mod plugin;
 pub mod probe;
 pub mod renderer_manager;
