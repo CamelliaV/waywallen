@@ -60,6 +60,9 @@ jobs:
             build/clang-release/cargo
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'displays/*/Cargo.toml') }}
 
+      - name: Install freetype into conda env
+        run: conda install -n waywallen freetype
+
       - name: Build AppImage
         run: bash ./scripts/build_appimage.sh
 
