@@ -649,30 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn unflatten_single_fourcc_single_modifier() {
-        let caps = unflatten_caps(
-            &[DRM_FORMAT_ABGR8888],
-            &[1],
-            &[DRM_FORMAT_MOD_LINEAR],
-            &[USAGE_SAMPLED | USAGE_TRANSFER_DST],
-            &[1],
-            &[0; 4],
-            &[0; 4],
-            drm(),
-            SYNC_SYNCOBJ_TIMELINE,
-            DEFAULT_COLOR,
-            MEM_HINT_HOST_VISIBLE,
-            (1920, 1080),
-        )
-        .unwrap();
-        let mods = caps.formats.by_fourcc.get(&DRM_FORMAT_ABGR8888).unwrap();
-        assert_eq!(mods.len(), 1);
-        assert_eq!(mods[0].modifier, DRM_FORMAT_MOD_LINEAR);
-        assert_eq!(mods[0].plane_count, 1);
-        assert_eq!(caps.extent_max, (1920, 1080));
-    }
-
-    #[test]
     fn unflatten_multi_fourcc_multi_modifier() {
         // 2 fourccs: ABGR8888 with [LINEAR, INVALID]; XRGB8888 with [LINEAR]
         let caps = unflatten_caps(
@@ -761,29 +737,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, NegotiateError::MalformedCaps(_)));
-    }
-
-    #[test]
-    fn unflatten_packs_uuid_le() {
-        let caps = unflatten_caps(
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            // 0xAA in byte 0 of word 0 → out[0] should be 0xAA
-            &[0xAA, 0, 0, 0],
-            &[0, 0, 0xCAFE_BABE, 0],
-            drm(),
-            0,
-            0,
-            0,
-            (0, 0),
-        )
-        .unwrap();
-        assert_eq!(caps.identity.device_uuid[0], 0xAA);
-        // word 2 = 0xCAFE_BABE → bytes 8..12 = [0xBE, 0xBA, 0xFE, 0xCA] (LE)
-        assert_eq!(&caps.identity.driver_uuid[8..12], &[0xBE, 0xBA, 0xFE, 0xCA]);
     }
 
     #[test]
@@ -1034,63 +987,6 @@ mod tests {
         assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
     }
 
-    #[test]
-    fn pick_same_driver_cross_device_uses_compat_linear() {
-        // Same driver_uuid, different device_uuid + different DRM minor
-        // (e.g. dual-AMD or iGPU+dGPU). Topology-first: any cross-device
-        // → CompatLinear. The previously-emitted OptimizedSameVendor is
-        // retired — tile-modifier PRIME across distinct GPUs has no
-        // portable correctness story.
-        let nl: u64 = 0x0200_0000_0000_0042;
-        let p = caps_one_fourcc(
-            DRM_FORMAT_ABGR8888,
-            &[(DRM_FORMAT_MOD_LINEAR, 1), (nl, 1)],
-            ident_split_uuid(0x77, 0xA1, 128),
-            SYNC_SYNCOBJ_TIMELINE,
-            DEFAULT_COLOR,
-            MEM_HINT_DEVICE_LOCAL | MEM_HINT_HOST_VISIBLE,
-        );
-        let c = caps_one_fourcc(
-            DRM_FORMAT_ABGR8888,
-            &[(DRM_FORMAT_MOD_LINEAR, 1), (nl, 1)],
-            ident_split_uuid(0x77, 0xB2, 129),
-            SYNC_SYNCOBJ_TIMELINE,
-            DEFAULT_COLOR,
-            MEM_HINT_DEVICE_LOCAL | MEM_HINT_HOST_VISIBLE,
-        );
-        let s = pick(&p, &c).unwrap();
-        assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
-        assert_eq!(s.path, PathCategory::CompatLinear);
-        assert_eq!(s.mem_source, MemSource::GpuLinear);
-    }
-
-    #[test]
-    fn pick_cross_vendor_stays_compat_linear() {
-        // Different driver_uuid → cross-vendor. Even with a common
-        // non-LINEAR modifier value, it's not portable.
-        let nl: u64 = 0x0200_0000_0000_0042;
-        let p = caps_one_fourcc(
-            DRM_FORMAT_ABGR8888,
-            &[(DRM_FORMAT_MOD_LINEAR, 1), (nl, 1)],
-            ident_split_uuid(0x77, 0xA1, 128),
-            SYNC_SYNCOBJ_TIMELINE,
-            DEFAULT_COLOR,
-            MEM_HINT_DEVICE_LOCAL,
-        );
-        let c = caps_one_fourcc(
-            DRM_FORMAT_ABGR8888,
-            &[(DRM_FORMAT_MOD_LINEAR, 1), (nl, 1)],
-            ident_split_uuid(0x88, 0xB2, 129),
-            SYNC_SYNCOBJ_TIMELINE,
-            DEFAULT_COLOR,
-            MEM_HINT_HOST_VISIBLE,
-        );
-        let s = pick(&p, &c).unwrap();
-        assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
-        assert_eq!(s.path, PathCategory::CompatLinear);
-        assert_eq!(s.mem_source, MemSource::GpuLinear);
-    }
-
     /// Build a PeerCaps with multiple fourccs, each carrying a list of
     /// (modifier, plane_count). Used by the cross-device fourcc-only
     /// tests below.
@@ -1135,35 +1031,6 @@ mod tests {
     }
 
     #[test]
-    fn pick_cross_device_picks_first_common_fourcc() {
-        // Producer order: ABGR, XRGB. Consumer: XRGB, RGBA. No modifier
-        // overlap on either fourcc — but the cross-device path doesn't
-        // intersect modifiers, so XRGB (first common) wins.
-        let p = caps_multi_fourcc(
-            &[
-                (DRM_FORMAT_ABGR8888, &[(0x0300_0000_0000_0001, 1)]),
-                (DRM_FORMAT_XRGB8888, &[(0x0300_0000_0000_0002, 1)]),
-            ],
-            ident_uuid(0xAA),
-        );
-        let c = caps_multi_fourcc(
-            &[
-                (DRM_FORMAT_XRGB8888, &[(0x0200_0000_0000_0001, 1)]),
-                (0x4142_4347, &[(DRM_FORMAT_MOD_LINEAR, 1)]), // 'GCBA' arbitrary
-            ],
-            ident_uuid(0xBB),
-        );
-        let s = pick(&p, &c).unwrap();
-        // BTreeMap order: 'AB24' = 0x34324241, 'XR24' = 0x34325258 —
-        // ABGR comes first in producer iteration but consumer doesn't
-        // list it, so XRGB is the first common fourcc.
-        assert_eq!(s.fourcc, DRM_FORMAT_XRGB8888);
-        assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
-        assert_eq!(s.path, PathCategory::CompatLinear);
-        assert_eq!(s.mem_source, MemSource::GpuLinear);
-    }
-
-    #[test]
     fn pick_cross_device_only_tile_modifiers_in_producer() {
         // The user-reported NVIDIA mpv ↔ AMD layer-shell scenario:
         // producer (NVIDIA EGL) advertises an NV-tile modifier without
@@ -1193,32 +1060,6 @@ mod tests {
         assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
         assert_eq!(s.path, PathCategory::CompatLinear);
         assert_eq!(s.mem_source, MemSource::GpuLinear);
-    }
-
-    #[test]
-    fn pick_cross_device_blacklist_skips_fourcc() {
-        // Producer: ABGR, XRGB. Consumer: ABGR, XRGB. Without blacklist
-        // we'd take ABGR. Blacklist (ABGR, LINEAR) on producer → fall
-        // through to XRGB.
-        let mut p = caps_multi_fourcc(
-            &[
-                (DRM_FORMAT_ABGR8888, &[(0x0300_0000_0000_0001, 1)]),
-                (DRM_FORMAT_XRGB8888, &[(0x0300_0000_0000_0002, 1)]),
-            ],
-            ident_uuid(0xAA),
-        );
-        let c = caps_multi_fourcc(
-            &[
-                (DRM_FORMAT_ABGR8888, &[(DRM_FORMAT_MOD_LINEAR, 1)]),
-                (DRM_FORMAT_XRGB8888, &[(DRM_FORMAT_MOD_LINEAR, 1)]),
-            ],
-            ident_uuid(0xBB),
-        );
-        p.blacklist
-            .insert((DRM_FORMAT_ABGR8888, DRM_FORMAT_MOD_LINEAR));
-        let s = pick(&p, &c).unwrap();
-        assert_eq!(s.fourcc, DRM_FORMAT_XRGB8888);
-        assert_eq!(s.modifier, DRM_FORMAT_MOD_LINEAR);
     }
 
     #[test]

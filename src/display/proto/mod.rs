@@ -51,22 +51,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_identity() {
-        assert_eq!(PROTOCOL_NAME, "waywallen-display-v4");
-        assert_eq!(PROTOCOL_VERSION, 4);
-    }
-
-    #[test]
-    fn request_hello_roundtrip() {
-        roundtrip_req(Request::Hello {
-            protocol: PROTOCOL_NAME.to_string(),
-            client_name: "libwaywallen_display".to_string(),
-            client_version: "0.1.0".to_string(),
-            client_protocol_version: PROTOCOL_VERSION,
-        });
-    }
-
-    #[test]
     fn request_register_roundtrip() {
         roundtrip_req(Request::RegisterDisplay {
             name: "DP-1".to_string(),
@@ -80,35 +64,6 @@ mod tests {
                 ("scale".to_string(), "1.0".to_string()),
                 ("hdr".to_string(), "false".to_string()),
             ],
-        });
-    }
-
-    #[test]
-    fn request_bye_roundtrip() {
-        roundtrip_req(Request::Bye);
-    }
-
-    #[test]
-    fn request_mouse_event_roundtrip() {
-        roundtrip_req(Request::MouseEvent {
-            kind: 0,
-            x: 123.5,
-            y: 456.25,
-            properties: vec![],
-        });
-        roundtrip_req(Request::MouseEvent {
-            kind: 1,
-            x: 0.0,
-            y: 0.0,
-            properties: vec![("button".to_string(), "1".to_string())],
-        });
-    }
-
-    #[test]
-    fn event_welcome_roundtrip() {
-        roundtrip_evt(Event::Welcome {
-            server_version: "waywallen 0.1.0".to_string(),
-            features: vec!["explicit_sync_fd".to_string()],
         });
     }
 

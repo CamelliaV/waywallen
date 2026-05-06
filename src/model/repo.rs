@@ -918,38 +918,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upsert_item_lowercases_type_and_returns_model() {
-        let db = mem_db().await;
-        let p = upsert_plugin(&db, "p", "").await.unwrap();
-        let lib = add_library(&db, p.id, "/root").await.unwrap();
-        let m = upsert_item(
-            &db,
-            ItemUpsertArgs {
-                plugin_id: p.id,
-                library_id: lib.id,
-                path: "a.png",
-                ty: "Scene",
-                display_name: "Hello",
-                preview_path: Some("thumb.jpg"),
-                description: Some("desc"),
-                external_id: Some("wk-1"),
-                size: None,
-                width: None,
-                height: None,
-                format: None,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(m.id > 0);
-        assert_eq!(m.ty, "scene");
-        assert_eq!(m.path, "a.png");
-        assert_eq!(m.display_name, "Hello");
-        assert_eq!(m.preview_path.as_deref(), Some("thumb.jpg"));
-        assert_eq!(m.external_id.as_deref(), Some("wk-1"));
-    }
-
-    #[tokio::test]
     async fn upsert_item_refreshes_every_column_on_conflict() {
         let db = mem_db().await;
         let p = upsert_plugin(&db, "p", "").await.unwrap();

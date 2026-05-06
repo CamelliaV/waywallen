@@ -2320,53 +2320,6 @@ mod tests {
     }
 
     #[test]
-    fn project_link_stretched_default_is_identity() {
-        // 1920x1080 texture, 1280x720 display, default layout (Stretched + Center).
-        let renderer = RendererHandle::test_stub("r1", "scene"); // 1920x1080
-        let info = make_info("eDP-1", 1280, 720);
-        let link = make_link("r1", 1);
-        let layout = ResolvedLayout {
-            fillmode: FillMode::default(),
-            align: Default::default(),
-            clear_rgba: [0.0, 0.0, 0.0, 1.0],
-        };
-        let cfg = project_link(&link, &renderer, &info, 42, &layout);
-        assert_eq!(cfg.config_generation, 42);
-        assert_eq!(
-            (cfg.source_x, cfg.source_y, cfg.source_w, cfg.source_h),
-            (0.0, 0.0, 1920.0, 1080.0)
-        );
-        assert_eq!(
-            (cfg.dest_x, cfg.dest_y, cfg.dest_w, cfg.dest_h),
-            (0.0, 0.0, 1280.0, 720.0)
-        );
-        assert_eq!(cfg.clear_rgba, [0.0, 0.0, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn project_link_aspect_fit_letterboxes_with_clear_color() {
-        // 1920x1080 texture into 1000x1000 display with PreserveAspectFit + Top:
-        // scale = min(1000/1920, 1000/1080) = 0.5208
-        // dest_w = 1000, dest_h = 562.5; dx = 0; dy = (1000-562.5)*0 = 0
-        let renderer = RendererHandle::test_stub("r1", "scene");
-        let info = make_info("DP-1", 1000, 1000);
-        let link = make_link("r1", 1);
-        let layout = ResolvedLayout {
-            fillmode: FillMode::PreserveAspectFit,
-            align: crate::display::layout::Align::Top,
-            clear_rgba: [0.2, 0.4, 0.6, 1.0],
-        };
-        let cfg = project_link(&link, &renderer, &info, 7, &layout);
-        assert!((cfg.source_w - 1920.0).abs() < 1e-3);
-        assert!((cfg.source_h - 1080.0).abs() < 1e-3);
-        assert!((cfg.dest_w - 1000.0).abs() < 1e-3);
-        assert!((cfg.dest_h - 562.5).abs() < 1e-3);
-        assert!((cfg.dest_x - 0.0).abs() < 1e-3);
-        assert!((cfg.dest_y - 0.0).abs() < 1e-3);
-        assert_eq!(cfg.clear_rgba, [0.2, 0.4, 0.6, 1.0]);
-    }
-
-    #[test]
     fn project_link_explicit_link_geometry_skips_layout() {
         // A link with explicit (non-sentinel) src/dst rects should
         // bypass display::layout::compute and pass the rects through

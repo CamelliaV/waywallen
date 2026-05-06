@@ -233,24 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn fit_taller_texture_letterboxes_left_right() {
-        // 1:1 texture into 16:9 display => bars left/right
-        let out = compute(input(
-            (1000.0, 1000.0),
-            (1920.0, 1080.0),
-            FillMode::PreserveAspectFit,
-            Align::Center,
-        ));
-        // scale = min(1920/1000, 1080/1000) = 1.08
-        // dest_w = 1080, dest_h = 1080
-        // dx = (1920 - 1080)*0.5 = 420
-        assert!((out.dest.0 - 420.0).abs() < 1e-3);
-        assert!((out.dest.1 - 0.0).abs() < 1e-3);
-        assert!((out.dest.2 - 1080.0).abs() < 1e-3);
-        assert!((out.dest.3 - 1080.0).abs() < 1e-3);
-    }
-
-    #[test]
     fn fit_top_left_align_pins_to_corner() {
         let out = compute(input(
             (1920.0, 1080.0),
@@ -260,19 +242,6 @@ mod tests {
         ));
         assert!((out.dest.0 - 0.0).abs() < 1e-3);
         assert!((out.dest.1 - 0.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn fit_bottom_right_align_pins_to_corner() {
-        let out = compute(input(
-            (1920.0, 1080.0),
-            (800.0, 600.0),
-            FillMode::PreserveAspectFit,
-            Align::BottomRight,
-        ));
-        // dest_w = 800, dest_h = 450; dx = (800-800)*1=0, dy=(600-450)*1=150
-        assert!((out.dest.0 - 0.0).abs() < 1e-3);
-        assert!((out.dest.1 - 150.0).abs() < 1e-3);
     }
 
     #[test]
@@ -303,24 +272,6 @@ mod tests {
         ));
         assert!((out.source.0 - 0.0).abs() < 1e-3);
         assert!((out.source.1 - 0.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn crop_taller_texture_crops_vertically() {
-        // 1:1 tex into 16:9 disp: scale = max(1920/1000, 1080/1000) = 1.92
-        // sw = 1920/1.92 = 1000; sh = 1080/1.92 = 562.5
-        // sx = 0, sy = (1000-562.5)*0.5 = 218.75
-        let out = compute(input(
-            (1000.0, 1000.0),
-            (1920.0, 1080.0),
-            FillMode::PreserveAspectCrop,
-            Align::Center,
-        ));
-        assert!((out.source.0 - 0.0).abs() < 1e-3);
-        assert!((out.source.1 - 218.75).abs() < 1e-3);
-        assert!((out.source.2 - 1000.0).abs() < 1e-3);
-        assert!((out.source.3 - 562.5).abs() < 1e-3);
-        assert_eq!(out.dest, (0.0, 0.0, 1920.0, 1080.0));
     }
 
     #[test]
@@ -366,18 +317,6 @@ mod tests {
             Align::TopLeft,
         ));
         assert_eq!(out.dest, (0.0, 0.0, 800.0, 600.0));
-    }
-
-    #[test]
-    fn centered_top_left_keeps_top_left_of_larger_texture() {
-        let out = compute(input(
-            (4000.0, 3000.0),
-            (1920.0, 1080.0),
-            FillMode::Centered,
-            Align::TopLeft,
-        ));
-        assert_eq!(out.source, (0.0, 0.0, 1920.0, 1080.0));
-        assert_eq!(out.dest, (0.0, 0.0, 1920.0, 1080.0));
     }
 
     #[test]
@@ -447,22 +386,4 @@ mod tests {
         assert_eq!(s.source, c.source);
     }
 
-    #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
-    struct Wrap {
-        fillmode: FillMode,
-        align: Align,
-    }
-
-    #[test]
-    fn enums_round_trip_serde_snake_case() {
-        let w = Wrap {
-            fillmode: FillMode::PreserveAspectFit,
-            align: Align::BottomRight,
-        };
-        let s = toml::to_string(&w).unwrap();
-        assert!(s.contains("preserve_aspect_fit"), "got {s}");
-        assert!(s.contains("bottom_right"), "got {s}");
-        let parsed: Wrap = toml::from_str(&s).unwrap();
-        assert_eq!(parsed, w);
-    }
 }

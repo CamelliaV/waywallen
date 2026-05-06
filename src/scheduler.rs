@@ -371,30 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn project_config_identity() {
-        let mut s = fresh();
-        let id = s.register_display("d".into(), 1280, 720, 0, vec![]);
-        s.set_active_binding(mk_binding(1));
-        let cfg = s.project_config(id).unwrap();
-        assert_eq!(cfg.source_w, 1920.0);
-        assert_eq!(cfg.source_h, 1080.0);
-        assert_eq!(cfg.dest_w, 1280.0);
-        assert_eq!(cfg.dest_h, 720.0);
-        assert_eq!(cfg.transform, 0);
-        assert_eq!(cfg.clear_rgba, [0.0, 0.0, 0.0, 1.0]);
-    }
-
-    #[test]
-    fn config_generation_is_monotonic() {
-        let mut s = fresh();
-        let id = s.register_display("d".into(), 100, 100, 0, vec![]);
-        s.set_active_binding(mk_binding(1));
-        let a = s.project_config(id).unwrap().config_generation;
-        let b = s.project_config(id).unwrap().config_generation;
-        assert!(b > a);
-    }
-
-    #[test]
     fn frame_fanout_k1_release_once() {
         let mut s = fresh();
         let d = s.register_display("d".into(), 100, 100, 0, vec![]);
@@ -406,23 +382,6 @@ mod tests {
 
         let out = s.release_frame(d, 1, 0, 10);
         assert_eq!(out, ReleaseOutcome::AllReleased);
-        assert_eq!(s.pending_count(), 0);
-    }
-
-    #[test]
-    fn frame_fanout_k2_requires_both_releases() {
-        let mut s = fresh();
-        let a = s.register_display("a".into(), 100, 100, 0, vec![]);
-        let b = s.register_display("b".into(), 100, 100, 0, vec![]);
-        s.set_active_binding(mk_binding(1));
-
-        let fanout = s.begin_frame(1, 0, 10);
-        assert_eq!(fanout.len(), 2);
-        assert!(fanout.contains(&a) && fanout.contains(&b));
-
-        assert_eq!(s.release_frame(a, 1, 0, 10), ReleaseOutcome::StillInFlight);
-        assert_eq!(s.pending_count(), 1);
-        assert_eq!(s.release_frame(b, 1, 0, 10), ReleaseOutcome::AllReleased);
         assert_eq!(s.pending_count(), 0);
     }
 

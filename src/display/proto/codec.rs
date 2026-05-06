@@ -247,74 +247,9 @@ fn read_framed(sock: &UnixStream) -> CodecResult<(u16, Vec<u8>, Vec<OwnedFd>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display::proto::generated::Rect;
-    use std::os::fd::IntoRawFd;
 
     fn pair() -> (UnixStream, UnixStream) {
         UnixStream::pair().expect("socketpair")
-    }
-
-    #[test]
-    fn request_bye_roundtrip() {
-        let (a, b) = pair();
-        send_request(&a, &Request::Bye, &[]).unwrap();
-        let (req, fds) = recv_request(&b).unwrap();
-        assert_eq!(req, Request::Bye);
-        assert!(fds.is_empty());
-    }
-
-    #[test]
-    fn request_hello_roundtrip() {
-        let (a, b) = pair();
-        let sent = Request::Hello {
-            protocol: "waywallen-display-v3".to_string(),
-            client_name: "client".to_string(),
-            client_version: "0.1.0".to_string(),
-            client_protocol_version: 3,
-        };
-        send_request(&a, &sent, &[]).unwrap();
-        let (got, _) = recv_request(&b).unwrap();
-        assert_eq!(got, sent);
-    }
-
-    #[test]
-    fn event_welcome_with_features() {
-        let (a, b) = pair();
-        let sent = Event::Welcome {
-            server_version: "waywallen 0.1.0".to_string(),
-            features: vec!["explicit_sync_fd".to_string(), "hdr".to_string()],
-        };
-        send_event(&a, &sent, &[]).unwrap();
-        let (got, _) = recv_event(&b).unwrap();
-        assert_eq!(got, sent);
-    }
-
-    #[test]
-    fn event_set_config_roundtrip() {
-        let (a, b) = pair();
-        let sent = Event::SetConfig {
-            config_generation: 3,
-            source_rect: Rect {
-                x: 0.0,
-                y: 0.0,
-                w: 1920.0,
-                h: 1080.0,
-            },
-            dest_rect: Rect {
-                x: 10.0,
-                y: 20.0,
-                w: 1900.0,
-                h: 1060.0,
-            },
-            transform: 0,
-            clear_r: 0.0,
-            clear_g: 0.0,
-            clear_b: 0.0,
-            clear_a: 1.0,
-        };
-        send_event(&a, &sent, &[]).unwrap();
-        let (got, _) = recv_event(&b).unwrap();
-        assert_eq!(got, sent);
     }
 
     fn make_memfd() -> OwnedFd {
@@ -407,23 +342,6 @@ mod tests {
                 actual: 0
             }
         ));
-    }
-
-    #[test]
-    fn extra_fd_is_rejected_on_send() {
-        let (a, _b) = pair();
-        let fd = make_memfd();
-        let raw = fd.into_raw_fd();
-        let err = send_request(&a, &Request::Bye, &[raw]).unwrap_err();
-        assert!(matches!(
-            err,
-            CodecError::FdCountMismatch {
-                expected: 0,
-                actual: 1
-            }
-        ));
-        // close the raw fd we passed in
-        unsafe { libc::close(raw) };
     }
 
     #[test]

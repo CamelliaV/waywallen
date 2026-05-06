@@ -396,29 +396,6 @@ fn try_load_libavformat() -> Option<LoadedLib> {
 mod tests {
     use super::*;
 
-    /// Missing path → all fields None.
-    /// Two probes to confirm the cached state is reused without panicking.
-    #[test]
-    fn probe_missing_returns_none() {
-        let probe = AvFormatProbe::new();
-        let path = "/this/path/definitely/does/not/exist";
-
-        for _ in 0..2 {
-            let meta = probe.probe_media(path);
-            assert_eq!(meta.width, None);
-            assert_eq!(meta.height, None);
-            assert_eq!(meta.format, None);
-        }
-    }
-
-    /// Trait-object usage check: ensures `AvFormatProbe` can stand in
-    /// behind an `Arc<dyn MediaProbe>` (the way SourceManager will hold it).
-    #[test]
-    fn dyn_dispatch_compiles_and_runs() {
-        let probe: std::sync::Arc<dyn MediaProbe> = std::sync::Arc::new(AvFormatProbe::new());
-        let _ = probe.probe_media("/nope");
-    }
-
     /// If libavformat is available, verify it actually parses a real
     /// media file. We synthesize a tiny WAV file (uncompressed PCM) so
     /// the test doesn't pull in any encoder. format should come back

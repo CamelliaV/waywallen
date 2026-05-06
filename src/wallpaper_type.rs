@@ -3,11 +3,6 @@ use std::collections::HashMap;
 
 pub type WallpaperType = String;
 
-pub const WP_IMAGE: &str = "image";
-pub const WP_VIDEO: &str = "video";
-pub const WP_SCENE: &str = "scene";
-pub const WP_GIF: &str = "gif";
-
 /// A single wallpaper entry discovered by a source plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WallpaperEntry {
