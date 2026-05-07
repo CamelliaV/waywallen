@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+fn default_true() -> bool {
+    true
+}
+
 const MAX_FDS: usize = 8;
 const MAX_BODY_BYTES: usize = u16::MAX as usize - 4;
 
@@ -52,6 +56,11 @@ pub enum TestMsg {
         slot_sizes: [u64; 2],
         color_seed: u32,
         frame_count: u32,
+        // Cross-vendor (AMD↔NVIDIA) OPAQUE_FD timeline import isn't
+        // interoperable; on cross_gpu the orchestrator drops timelines
+        // and the socket roundtrip becomes the per-frame fence.
+        #[serde(default = "default_true")]
+        use_timelines: bool,
     },
     BindTimelines,
     Frame {

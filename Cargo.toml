@@ -46,7 +46,7 @@ sea-orm-migration = { version = "1.1", default-features = false, features = [
     "sqlx-sqlite",
 ] }
 # self_test --role display 子进程当作真实 v1 客户端连接生产 endpoint
-waywallen-display-sys = { git = "https://github.com/waywallen/waywallen-display", rev = "fde3a160429c9e45a409574779edb1c8626feb16" }
+waywallen-display-sys = { path = "../waywallen-display" }
 
 [dev-dependencies]
 tempfile = "3"

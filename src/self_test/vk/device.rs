@@ -125,11 +125,8 @@ pub fn pick_memory_type(
             continue;
         }
         let f = mem_props.memory_types[i as usize].property_flags;
-        // host-visible path needs HOST_VISIBLE && !DEVICE_LOCAL — true GTT,
-        // the only memory type that PRIME-imports across GPUs.
         let ok = if want_host_visible {
             f.contains(vk::MemoryPropertyFlags::HOST_VISIBLE)
-                && !f.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
         } else {
             f.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
         };
@@ -139,5 +136,24 @@ pub fn pick_memory_type(
     }
     Err(anyhow!(
         "no memory type satisfies type_bits=0x{type_bits:x}, host_visible={want_host_visible}"
+    ))
+}
+
+// dma-buf import: the driver's fd_props already constrains type_bits to
+// the legal set. NVIDIA exposes a dedicated "PRIME-importable" type that
+// shows up as the lowest-indexed bit; picking the strictly DEVICE_LOCAL
+// alternative (when both are present) makes vkAllocateMemory fail at
+// import time. Prefer the lowest matching bit unconditionally.
+pub fn pick_memory_type_for_import(
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    type_bits: u32,
+) -> Result<u32> {
+    for i in 0..mem_props.memory_type_count {
+        if (type_bits & (1 << i)) != 0 {
+            return Ok(i);
+        }
+    }
+    Err(anyhow!(
+        "no memory type matches type_bits=0x{type_bits:x}"
     ))
 }

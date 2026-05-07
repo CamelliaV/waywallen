@@ -84,7 +84,7 @@ async fn run_async(
             | vk::ImageUsageFlags::TRANSFER_SRC
             | vk::ImageUsageFlags::TRANSFER_DST,
         &[modifier],
-        false,
+        cross_gpu,
     )
     .context("alloc slot 0")?;
     let img1 = create_with_modifiers(
@@ -96,7 +96,7 @@ async fn run_async(
             | vk::ImageUsageFlags::TRANSFER_SRC
             | vk::ImageUsageFlags::TRANSFER_DST,
         &[modifier],
-        false,
+        cross_gpu,
     )
     .context("alloc slot 1")?;
     let cmdbuf = cmd::create(vkd)?;

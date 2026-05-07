@@ -192,9 +192,8 @@ pub fn import_dmabuf(
             fd_props.memory_type_bits,
         ));
     }
-    let mtype = super::device::pick_memory_type(&vkd.mem_props, bits, false).or_else(
-        |_| super::device::pick_memory_type(&vkd.mem_props, bits, true),
-    )?;
+    let mtype = super::device::pick_memory_type_for_import(&vkd.mem_props, bits)?;
+    let alloc_size = req.size;
 
     // vk consumes the fd on success; on failure caller still owns it.
     let raw_for_vk = fd_owner.into_raw_fd();
@@ -205,7 +204,7 @@ pub fn import_dmabuf(
     let memory = unsafe {
         vkd.device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
-                .allocation_size(req.size)
+                .allocation_size(alloc_size)
                 .memory_type_index(mtype)
                 .push_next(&mut ded)
                 .push_next(&mut import),

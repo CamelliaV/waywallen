@@ -14,8 +14,9 @@ use super::super::vk::image::{
 };
 use super::super::vk::modifier::format_modifier;
 use super::super::vk::sync::{
-    create_timeline_exportable, export_opaque_fd, import_timeline_opaque_fd, wait_timeline,
-    TimelineSemaphore,
+    create_binary_importable, create_binary_sync_fd_exportable, create_timeline_exportable,
+    export_opaque_fd, export_signaled_sync_fd, import_sync_fd_temporary,
+    import_timeline_opaque_fd, wait_timeline, TimelineSemaphore,
 };
 
 const FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
@@ -97,7 +98,7 @@ pub fn run_orchestrator(
         FORMAT,
         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
         &[modifier],
-        false,
+        cross_gpu,
     )
     .context("alloc slot 0")?;
     let img1 = create_with_modifiers(
@@ -107,7 +108,7 @@ pub fn run_orchestrator(
         FORMAT,
         vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
         &[modifier],
-        false,
+        cross_gpu,
     )
     .context("alloc slot 1")?;
 
@@ -115,8 +116,25 @@ pub fn run_orchestrator(
     cmd::transition_to_general(vkd, &cmdbuf, &[img0.image, img1.image])
         .context("transition slots to GENERAL")?;
 
-    let acquire = create_timeline_exportable(vkd).context("create acquire timeline")?;
-    let release = create_timeline_exportable(vkd).context("create release timeline")?;
+    let use_timelines = !cross_gpu;
+    let timelines = if use_timelines {
+        Some((
+            create_timeline_exportable(vkd).context("create acquire timeline")?,
+            create_timeline_exportable(vkd).context("create release timeline")?,
+        ))
+    } else {
+        None
+    };
+    // Cross-GPU per-frame SYNC_FD: amdgpu won't schedule a foreign
+    // dma-buf without an explicit dma_fence wait on the consumer's
+    // submit. Producer signals into this each frame, exports SYNC_FD,
+    // ships it with Frame, and the SYNC_FD is consumed on temporary
+    // import for the consumer's wait.
+    let sync_sem = if cross_gpu {
+        Some(create_binary_sync_fd_exportable(vkd).context("create sync_fd sem")?)
+    } else {
+        None
+    };
 
     let fd0 = export_dmabuf(vkd, &img0).context("export slot 0 dma-buf")?;
     let fd1 = export_dmabuf(vkd, &img1).context("export slot 1 dma-buf")?;
@@ -138,21 +156,24 @@ pub fn run_orchestrator(
             slot_sizes: [img0.plane0_size, img1.plane0_size],
             color_seed: 0,
             frame_count: FRAMES,
+            use_timelines,
         },
         &[fd0.as_raw_fd(), fd1.as_raw_fd()],
     )
     .map_err(|e| anyhow!("send BindPair: {e}"))?;
     drop((fd0, fd1));
 
-    let acq_fd = export_opaque_fd(vkd, &acquire).context("export acquire fd")?;
-    let rel_fd = export_opaque_fd(vkd, &release).context("export release fd")?;
-    send_msg(
-        sock,
-        &TestMsg::BindTimelines,
-        &[acq_fd.as_raw_fd(), rel_fd.as_raw_fd()],
-    )
-    .map_err(|e| anyhow!("send BindTimelines: {e}"))?;
-    drop((acq_fd, rel_fd));
+    if let Some((acquire, release)) = &timelines {
+        let acq_fd = export_opaque_fd(vkd, acquire).context("export acquire fd")?;
+        let rel_fd = export_opaque_fd(vkd, release).context("export release fd")?;
+        send_msg(
+            sock,
+            &TestMsg::BindTimelines,
+            &[acq_fd.as_raw_fd(), rel_fd.as_raw_fd()],
+        )
+        .map_err(|e| anyhow!("send BindTimelines: {e}"))?;
+        drop((acq_fd, rel_fd));
+    }
 
     let imgs = [img0.image, img1.image];
     let mut report = RenderLoop {
@@ -190,40 +211,78 @@ pub fn run_orchestrator(
             );
             vkd.device.end_command_buffer(cmdbuf.buf)?;
 
-            let signal_sems = [acquire.sem];
-            let signal_vals = [acq_val];
-            let mut tl_submit = vk::TimelineSemaphoreSubmitInfo::default()
-                .signal_semaphore_values(&signal_vals);
             let bufs = [cmdbuf.buf];
-            vkd.device.queue_submit(
-                vkd.queue,
-                &[vk::SubmitInfo::default()
-                    .command_buffers(&bufs)
-                    .signal_semaphores(&signal_sems)
-                    .push_next(&mut tl_submit)],
-                vk::Fence::null(),
-            )?;
+            if let Some((acquire, _)) = &timelines {
+                let signal_sems = [acquire.sem];
+                let signal_vals = [acq_val];
+                let mut tl_submit = vk::TimelineSemaphoreSubmitInfo::default()
+                    .signal_semaphore_values(&signal_vals);
+                vkd.device.queue_submit(
+                    vkd.queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&bufs)
+                        .signal_semaphores(&signal_sems)
+                        .push_next(&mut tl_submit)],
+                    vk::Fence::null(),
+                )?;
+            } else if let Some(sem) = sync_sem {
+                let signal_sems = [sem];
+                vkd.device.queue_submit(
+                    vkd.queue,
+                    &[vk::SubmitInfo::default()
+                        .command_buffers(&bufs)
+                        .signal_semaphores(&signal_sems)],
+                    vk::Fence::null(),
+                )?;
+            } else {
+                vkd.device.queue_submit(
+                    vkd.queue,
+                    &[vk::SubmitInfo::default().command_buffers(&bufs)],
+                    vk::Fence::null(),
+                )?;
+                vkd.device.queue_wait_idle(vkd.queue)?;
+            }
         }
 
-        send_msg(
-            sock,
-            &TestMsg::Frame {
-                n,
-                slot: slot as u32,
-                acquire_value: acq_val,
-                release_value: rel_val,
-            },
-            &[],
-        )
-        .map_err(|e| anyhow!("send Frame n={n}: {e}"))?;
+        if let Some(sem) = sync_sem {
+            let fd = export_signaled_sync_fd(vkd, sem)
+                .with_context(|| format!("export sync_fd n={n}"))?;
+            let raw = fd.as_raw_fd();
+            send_msg(
+                sock,
+                &TestMsg::Frame {
+                    n,
+                    slot: slot as u32,
+                    acquire_value: acq_val,
+                    release_value: rel_val,
+                },
+                &[raw],
+            )
+            .map_err(|e| anyhow!("send Frame n={n}: {e}"))?;
+            drop(fd);
+        } else {
+            send_msg(
+                sock,
+                &TestMsg::Frame {
+                    n,
+                    slot: slot as u32,
+                    acquire_value: acq_val,
+                    release_value: rel_val,
+                },
+                &[],
+            )
+            .map_err(|e| anyhow!("send Frame n={n}: {e}"))?;
+        }
 
-        match wait_timeline(vkd, &release, rel_val, PER_FRAME_TIMEOUT_NS) {
-            Ok(()) => {}
-            Err(e) => {
-                log::warn!("render_loop: release timeout at frame {n}: {e}");
-                report.acquire_timeout += 1;
-                // First timeout poisons the rest of the run; bail loudly.
-                break;
+        if let Some((_, release)) = &timelines {
+            match wait_timeline(vkd, release, rel_val, PER_FRAME_TIMEOUT_NS) {
+                Ok(()) => {}
+                Err(e) => {
+                    log::warn!("render_loop: release timeout at frame {n}: {e}");
+                    report.acquire_timeout += 1;
+                    // First timeout poisons the rest of the run; bail loudly.
+                    break;
+                }
             }
         }
 
@@ -252,8 +311,13 @@ pub fn run_orchestrator(
 
     unsafe {
         let _ = vkd.device.device_wait_idle();
-        vkd.device.destroy_semaphore(acquire.sem, None);
-        vkd.device.destroy_semaphore(release.sem, None);
+        if let Some((acquire, release)) = &timelines {
+            vkd.device.destroy_semaphore(acquire.sem, None);
+            vkd.device.destroy_semaphore(release.sem, None);
+        }
+        if let Some(sem) = sync_sem {
+            vkd.device.destroy_semaphore(sem, None);
+        }
         vkd.device.free_memory(img0.memory, None);
         vkd.device.free_memory(img1.memory, None);
         vkd.device.destroy_image(img0.image, None);
@@ -276,6 +340,7 @@ pub fn run_peer(vkd: &VkDevice, sock: &UnixStream) -> Result<()> {
         slot_sizes: _,
         color_seed: _,
         frame_count,
+        use_timelines,
     } = msg
     else {
         anyhow::bail!("expected BindPair, got {msg:?}");
@@ -311,28 +376,46 @@ pub fn run_peer(vkd: &VkDevice, sock: &UnixStream) -> Result<()> {
     )
     .context("import slot 1")?;
 
-    let (msg, fds) = recv_msg(sock).map_err(|e| anyhow!("recv BindTimelines: {e}"))?;
-    if !matches!(msg, TestMsg::BindTimelines) {
-        anyhow::bail!("expected BindTimelines got {msg:?}");
-    }
-    if fds.len() != 2 {
-        anyhow::bail!("BindTimelines: expected 2 fds, got {}", fds.len());
-    }
-    let mut fds = fds.into_iter();
-    let acq_fd = fds.next().unwrap();
-    let rel_fd = fds.next().unwrap();
-    let acquire = import_timeline_opaque_fd(vkd, acq_fd).context("import acquire timeline")?;
-    let release = import_timeline_opaque_fd(vkd, rel_fd).context("import release timeline")?;
+    let timelines = if use_timelines {
+        let (msg, fds) = recv_msg(sock).map_err(|e| anyhow!("recv BindTimelines: {e}"))?;
+        if !matches!(msg, TestMsg::BindTimelines) {
+            anyhow::bail!("expected BindTimelines got {msg:?}");
+        }
+        if fds.len() != 2 {
+            anyhow::bail!("BindTimelines: expected 2 fds, got {}", fds.len());
+        }
+        let mut fds = fds.into_iter();
+        let acq_fd = fds.next().unwrap();
+        let rel_fd = fds.next().unwrap();
+        let acquire = import_timeline_opaque_fd(vkd, acq_fd).context("import acquire timeline")?;
+        let release = import_timeline_opaque_fd(vkd, rel_fd).context("import release timeline")?;
+        Some((acquire, release))
+    } else {
+        None
+    };
 
     let cmdbuf = cmd::create(vkd)?;
-    cmd::transition_to_general(vkd, &cmdbuf, &[img0.image, img1.image])
-        .context("peer transition imports to GENERAL")?;
+    let (read_layout, peer_sync_sem) = if use_timelines {
+        cmd::transition_to_general(vkd, &cmdbuf, &[img0.image, img1.image])
+            .context("peer transition imports")?;
+        (vk::ImageLayout::GENERAL, vk::Semaphore::null())
+    } else {
+        // Cross-GPU: skip the upfront transition (an upfront submit
+        // referencing the foreign BO fails on amdgpu before producer
+        // pages exist) and treat the image as GENERAL on first read,
+        // matching display_consumer.rs's working fanout pattern. The
+        // per-frame SYNC_FD wait carries the producer's last-write
+        // dependency through dma_fence — amdgpu won't schedule the
+        // foreign BO without it.
+        let sem = create_binary_importable(vkd).context("create peer sync_fd sem")?;
+        (vk::ImageLayout::GENERAL, sem)
+    };
 
     let staging = create_host_buffer(vkd, (WIDTH * HEIGHT * 4) as u64).context("alloc staging")?;
     let imgs = [img0.image, img1.image];
 
     for _ in 0..frame_count {
-        let (msg, _) = recv_msg(sock).map_err(|e| anyhow!("recv Frame: {e}"))?;
+        let (msg, fds) = recv_msg(sock).map_err(|e| anyhow!("recv Frame: {e}"))?;
         match msg {
             TestMsg::Frame {
                 n,
@@ -340,14 +423,24 @@ pub fn run_peer(vkd: &VkDevice, sock: &UnixStream) -> Result<()> {
                 acquire_value,
                 release_value,
             } => {
+                let sync_wait = if peer_sync_sem != vk::Semaphore::null() {
+                    let mut it = fds.into_iter();
+                    let fd = it.next().ok_or_else(|| anyhow!("Frame missing sync_fd"))?;
+                    import_sync_fd_temporary(vkd, peer_sync_sem, fd)
+                        .with_context(|| format!("import sync_fd n={n}"))?;
+                    Some(peer_sync_sem)
+                } else {
+                    None
+                };
                 run_one_frame(
                     vkd,
                     sock,
                     &cmdbuf,
-                    &acquire,
-                    &release,
+                    timelines.as_ref(),
+                    sync_wait,
                     &staging,
                     &imgs,
+                    read_layout,
                     n,
                     slot,
                     acquire_value,
@@ -367,8 +460,13 @@ pub fn run_peer(vkd: &VkDevice, sock: &UnixStream) -> Result<()> {
 
     unsafe {
         let _ = vkd.device.device_wait_idle();
-        vkd.device.destroy_semaphore(acquire.sem, None);
-        vkd.device.destroy_semaphore(release.sem, None);
+        if let Some((acquire, release)) = &timelines {
+            vkd.device.destroy_semaphore(acquire.sem, None);
+            vkd.device.destroy_semaphore(release.sem, None);
+        }
+        if peer_sync_sem != vk::Semaphore::null() {
+            vkd.device.destroy_semaphore(peer_sync_sem, None);
+        }
     }
     destroy_host_buffer(vkd, staging);
     cmd::destroy(vkd, cmdbuf);
@@ -381,10 +479,11 @@ fn run_one_frame(
     vkd: &VkDevice,
     sock: &UnixStream,
     cmdbuf: &cmd::OneShotCmd,
-    acquire: &TimelineSemaphore,
-    release: &TimelineSemaphore,
+    timelines: Option<&(TimelineSemaphore, TimelineSemaphore)>,
+    sync_wait: Option<vk::Semaphore>,
     staging: &HostBuffer,
     imgs: &[vk::Image; 2],
+    read_layout: vk::ImageLayout,
     n: u32,
     slot: u32,
     acq_val: u64,
@@ -406,7 +505,7 @@ fn run_one_frame(
         vkd.device.cmd_copy_image_to_buffer(
             cmdbuf.buf,
             src,
-            vk::ImageLayout::GENERAL,
+            read_layout,
             staging.buffer,
             &[vk::BufferImageCopy::default()
                 .buffer_offset(0)
@@ -426,29 +525,57 @@ fn run_one_frame(
         );
         vkd.device.end_command_buffer(cmdbuf.buf)?;
 
-        let wait_sems = [acquire.sem];
-        let wait_vals = [acq_val];
-        let signal_sems = [release.sem];
-        let signal_vals = [rel_val];
-        let mut tl_submit = vk::TimelineSemaphoreSubmitInfo::default()
-            .wait_semaphore_values(&wait_vals)
-            .signal_semaphore_values(&signal_vals);
-        let wait_stages = [vk::PipelineStageFlags::TRANSFER];
         let bufs = [cmdbuf.buf];
-        vkd.device.queue_submit(
-            vkd.queue,
-            &[vk::SubmitInfo::default()
-                .wait_semaphores(&wait_sems)
-                .wait_dst_stage_mask(&wait_stages)
-                .signal_semaphores(&signal_sems)
-                .command_buffers(&bufs)
-                .push_next(&mut tl_submit)],
-            vk::Fence::null(),
-        )?;
+        if let Some((acquire, release)) = timelines {
+            let wait_sems = [acquire.sem];
+            let wait_vals = [acq_val];
+            let signal_sems = [release.sem];
+            let signal_vals = [rel_val];
+            let mut tl_submit = vk::TimelineSemaphoreSubmitInfo::default()
+                .wait_semaphore_values(&wait_vals)
+                .signal_semaphore_values(&signal_vals);
+            let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+            vkd.device.queue_submit(
+                vkd.queue,
+                &[vk::SubmitInfo::default()
+                    .wait_semaphores(&wait_sems)
+                    .wait_dst_stage_mask(&wait_stages)
+                    .signal_semaphores(&signal_sems)
+                    .command_buffers(&bufs)
+                    .push_next(&mut tl_submit)],
+                vk::Fence::null(),
+            )?;
+        } else if let Some(sem) = sync_wait {
+            let wait_sems = [sem];
+            let wait_stages = [vk::PipelineStageFlags::TRANSFER];
+            vkd.device.queue_submit(
+                vkd.queue,
+                &[vk::SubmitInfo::default()
+                    .wait_semaphores(&wait_sems)
+                    .wait_dst_stage_mask(&wait_stages)
+                    .command_buffers(&bufs)],
+                vk::Fence::null(),
+            )?;
+        } else {
+            vkd.device.queue_submit(
+                vkd.queue,
+                &[vk::SubmitInfo::default().command_buffers(&bufs)],
+                vk::Fence::null(),
+            )?;
+        }
     }
 
-    wait_timeline(vkd, release, rel_val, PER_FRAME_TIMEOUT_NS)
-        .with_context(|| format!("peer wait release n={n}"))?;
+    if let Some((_, release)) = timelines {
+        wait_timeline(vkd, release, rel_val, PER_FRAME_TIMEOUT_NS)
+            .with_context(|| format!("peer wait release n={n}"))?;
+    } else {
+        unsafe {
+            vkd.device
+                .queue_wait_idle(vkd.queue)
+                .with_context(|| format!("peer queue_wait_idle n={n}"))?;
+        }
+    }
+    let _ = (acq_val, rel_val);
 
     let center_byte = ((HEIGHT / 2) * WIDTH + WIDTH / 2) as usize * 4;
     let got = unsafe {
