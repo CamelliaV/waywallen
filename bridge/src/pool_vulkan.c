@@ -56,8 +56,16 @@ typedef struct vk_state {
 
     /* Producer-configured slot image usage. Populated from
      * ww_pool_vulkan_init_t::image_usage_flags (defaulted in
-     * backend_init when caller passed 0). */
+     * backend_init when caller passed 0). Used at vkCreateImage
+     * time only; the modifier filter does not derive features
+     * from this. */
     VkImageUsageFlags image_usage;
+
+    /* Format features the negotiated DRM modifier must support.
+     * Populated from ww_pool_vulkan_init_t::format_feature_flags
+     * (defaulted to TRANSFER_DST_BIT when the caller passes 0).
+     * Sole input to the advertise-time modifier filter. */
+    VkFormatFeatureFlags format_features;
 
     /* Per-slot resources. */
     struct {
@@ -130,31 +138,17 @@ static VkFormat fourcc_to_vk_format(uint32_t fourcc) {
     return VK_FORMAT_UNDEFINED;
 }
 
-/* Reverse of map_format_features_to_usage (kept for advertise debug
- * logging). Translate the producer's chosen image_usage into the set
- * of format-feature bits a modifier MUST support to back that usage,
- * so probe_caps can filter advertise candidates down to modifiers
- * alloc_slot will actually accept. */
-static VkFormatFeatureFlags usage_to_format_features(VkImageUsageFlags usage) {
-    VkFormatFeatureFlags f = 0;
-    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT)            f |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-    if (usage & VK_IMAGE_USAGE_STORAGE_BIT)            f |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-    if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)   f |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-    if (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)       f |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
-    if (usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)       f |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-    return f;
-}
-
 static int probe_caps(ww_pool_t *pool, uint32_t width, uint32_t height) {
     (void)width; (void)height; /* Vulkan modifiers don't depend on extent at probe time. */
     vk_state_t *st = (vk_state_t *)pool->backend_data;
 
     /* Walk every candidate fourcc, pull the modifier list per-format,
      * and keep only the modifiers whose tilingFeatures cover the
-     * producer's image_usage. Mirrors the consumer's filter (display
-     * backend_vulkan.c). */
-    const VkFormatFeatureFlags want_features =
-        usage_to_format_features(st->image_usage);
+     * producer's required feature set (`format_features`, populated
+     * from ww_pool_vulkan_init_t::format_feature_flags + bridge's
+     * unconditional TRANSFER_SRC for the consumer's import). Mirrors
+     * the consumer's local filter in waywallen-display. */
+    const VkFormatFeatureFlags want_features = st->format_features;
 
     /* Worst-case sizing: every fourcc × every modifier. We grow the
      * entries array dynamically as we go. */
@@ -206,8 +200,8 @@ static int probe_caps(ww_pool_t *pool, uint32_t width, uint32_t height) {
     if (entries_count == 0) {
         fprintf(stderr,
                 "ww_pool[vulkan]: no (fourcc, modifier) pairs satisfy producer "
-                "image_usage=0x%x — falling back to single LINEAR ABGR8888\n",
-                st->image_usage);
+                "format_features=0x%x — falling back to single LINEAR ABGR8888\n",
+                st->format_features);
         free(entries);
         ww_format_entry_t *ent = (ww_format_entry_t *)calloc(1, sizeof(*ent));
         if (!ent) return -ENOMEM;
@@ -543,6 +537,10 @@ static int backend_init(ww_pool_t *pool, const void *init_data) {
                             ? init->image_usage_flags
                             : VK_IMAGE_USAGE_TRANSFER_DST_BIT)
                        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    st->format_features = (init->format_feature_flags
+                               ? init->format_feature_flags
+                               : VK_FORMAT_FEATURE_TRANSFER_DST_BIT)
+                          | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
 
     /* See pool_egl_gbm: function-pointer-vs-object-pointer trick. */
     union {

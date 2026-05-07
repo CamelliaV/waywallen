@@ -2139,14 +2139,12 @@ mod tests {
         let mod_count = mods.len() as u32;
         let modifiers: Vec<u64> = mods.iter().map(|(m, _)| *m).collect();
         let plane_counts: Vec<u32> = mods.iter().map(|(_, p)| *p).collect();
-        let usages: Vec<u32> = vec![N::USAGE_SAMPLED; mods.len()];
         let dev_words = [u32::from_le_bytes([uuid_byte; 4]); 4];
         let drv_words = [u32::from_le_bytes([uuid_byte; 4]); 4];
         N::unflatten_caps(
             &[fourcc],
             &[mod_count],
             &modifiers,
-            &usages,
             &plane_counts,
             &dev_words,
             &drv_words,

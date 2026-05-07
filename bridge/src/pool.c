@@ -347,12 +347,10 @@ int ww_bridge_pool_advertise_caps(ww_pool_t *pool,
     uint32_t *scratch_mod_counts   = (uint32_t *)calloc(n, sizeof(uint32_t));
     uint64_t *scratch_modifiers    = (uint64_t *)calloc(n, sizeof(uint64_t));
     uint32_t *scratch_plane_counts = (uint32_t *)calloc(n, sizeof(uint32_t));
-    uint32_t *scratch_usages       = (uint32_t *)calloc(n, sizeof(uint32_t));
     if (!scratch_fourccs || !scratch_mod_counts || !scratch_modifiers ||
-        !scratch_plane_counts || !scratch_usages) {
+        !scratch_plane_counts) {
         free(scratch_fourccs); free(scratch_mod_counts);
         free(scratch_modifiers); free(scratch_plane_counts);
-        free(scratch_usages);
         return -ENOMEM;
     }
 
@@ -366,9 +364,8 @@ int ww_bridge_pool_advertise_caps(ww_pool_t *pool,
     ww_format_caps_caller_t out = {0};
     ww_bridge_negotiation_fill_format_caps(
         &neg,
-        WW_USAGE_SAMPLED,
         scratch_fourccs, scratch_mod_counts,
-        scratch_modifiers, scratch_plane_counts, scratch_usages,
+        scratch_modifiers, scratch_plane_counts,
         &out);
 
     out.device_uuid       = pool->caps.have_uuid ? pool->caps.device_uuid : NULL;
@@ -384,7 +381,6 @@ int ww_bridge_pool_advertise_caps(ww_pool_t *pool,
     rc = ww_bridge_send_format_caps_v2(sock, &out);
     free(scratch_fourccs); free(scratch_mod_counts);
     free(scratch_modifiers); free(scratch_plane_counts);
-    free(scratch_usages);
     return rc;
 }
 

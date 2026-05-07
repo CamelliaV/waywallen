@@ -6,7 +6,6 @@ use crate::renderer_manager::DrmNode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModCap {
     pub modifier: u64,
-    pub usage: u32, // bitmask of USAGE_*
     pub plane_count: u32,
 }
 
@@ -127,9 +126,8 @@ impl PeerCaps {
             );
             for m in mods {
                 log::debug!(
-                    "{prefix}:   modifier=0x{:016x} usage=0x{:x} planes={}",
+                    "{prefix}:   modifier=0x{:016x} planes={}",
                     m.modifier,
-                    m.usage,
                     m.plane_count,
                 );
             }
@@ -224,14 +222,6 @@ pub enum NegotiateError {
 // `protocol/waywallen_display_v1.xml::consumer_caps`.
 // ---------------------------------------------------------------------------
 
-pub const USAGE_SAMPLED: u32 = 1 << 0;
-pub const USAGE_STORAGE: u32 = 1 << 1;
-pub const USAGE_COLOR_ATTACHMENT: u32 = 1 << 2;
-pub const USAGE_DEPTH_STENCIL: u32 = 1 << 3;
-pub const USAGE_TRANSFER_SRC: u32 = 1 << 4;
-pub const USAGE_TRANSFER_DST: u32 = 1 << 5;
-pub const USAGE_SCANOUT: u32 = 1 << 6;
-
 pub const MEM_HINT_DEVICE_LOCAL: u32 = 1 << 0;
 pub const MEM_HINT_HOST_VISIBLE: u32 = 1 << 1;
 pub const MEM_HINT_SCANOUT_CAPABLE: u32 = 1 << 2;
@@ -289,7 +279,6 @@ pub fn unflatten_caps(
     fourccs: &[u32],
     mod_counts: &[u32],
     modifiers: &[u64],
-    usages: &[u32],
     plane_counts: &[u32],
     device_uuid: &[u32],
     driver_uuid: &[u32],
@@ -308,11 +297,6 @@ pub fn unflatten_caps(
     if modifiers.len() != total {
         return Err(NegotiateError::MalformedCaps(
             "modifiers.len() != sum(mod_counts)",
-        ));
-    }
-    if usages.len() != total {
-        return Err(NegotiateError::MalformedCaps(
-            "usages.len() != sum(mod_counts)",
         ));
     }
     if plane_counts.len() != total {
@@ -334,7 +318,6 @@ pub fn unflatten_caps(
         for j in 0..n {
             caps.push(ModCap {
                 modifier: modifiers[cursor + j],
-                usage: usages[cursor + j],
                 plane_count: plane_counts[cursor + j],
             });
         }
@@ -634,7 +617,6 @@ mod tests {
                 DRM_FORMAT_MOD_INVALID,
                 DRM_FORMAT_MOD_LINEAR,
             ],
-            &[USAGE_SAMPLED, USAGE_SAMPLED, USAGE_SCANOUT],
             &[1, 1, 1],
             &[0; 4],
             &[0; 4],
@@ -651,7 +633,7 @@ mod tests {
         assert_eq!(abgr[1].modifier, DRM_FORMAT_MOD_INVALID);
         let xrgb = caps.formats.by_fourcc.get(&DRM_FORMAT_XRGB8888).unwrap();
         assert_eq!(xrgb.len(), 1);
-        assert_eq!(xrgb[0].usage, USAGE_SCANOUT);
+        assert_eq!(xrgb[0].plane_count, 1);
     }
 
     #[test]
@@ -660,7 +642,6 @@ mod tests {
             &[DRM_FORMAT_ABGR8888],
             &[2],
             &[DRM_FORMAT_MOD_LINEAR], // sum(mod_counts) = 2, but only 1 modifier
-            &[USAGE_SAMPLED, USAGE_SAMPLED],
             &[1, 1],
             &[0; 4],
             &[0; 4],
@@ -677,7 +658,6 @@ mod tests {
     #[test]
     fn unflatten_rejects_bad_uuid_length() {
         let err = unflatten_caps(
-            &[],
             &[],
             &[],
             &[],
@@ -700,7 +680,6 @@ mod tests {
             &[DRM_FORMAT_ABGR8888, DRM_FORMAT_XRGB8888],
             &[1], // length mismatch with fourccs
             &[DRM_FORMAT_MOD_LINEAR],
-            &[USAGE_SAMPLED],
             &[1],
             &[0; 4],
             &[0; 4],
@@ -797,7 +776,6 @@ mod tests {
         let mod_count = mods.len() as u32;
         let modifiers: Vec<u64> = mods.iter().map(|(m, _)| *m).collect();
         let plane_counts: Vec<u32> = mods.iter().map(|(_, p)| *p).collect();
-        let usages: Vec<u32> = vec![USAGE_SAMPLED; mods.len()];
         // device_uuid words from identity
         let dev_words: Vec<u32> = identity
             .device_uuid
@@ -813,7 +791,6 @@ mod tests {
             &[fourcc],
             &[mod_count],
             &modifiers,
-            &usages,
             &plane_counts,
             &dev_words,
             &drv_words,
@@ -970,12 +947,10 @@ mod tests {
         let mod_counts: Vec<u32> = entries.iter().map(|(_, m)| m.len() as u32).collect();
         let mut modifiers: Vec<u64> = Vec::new();
         let mut plane_counts: Vec<u32> = Vec::new();
-        let mut usages: Vec<u32> = Vec::new();
         for (_, mods) in entries {
             for (m, p) in *mods {
                 modifiers.push(*m);
                 plane_counts.push(*p);
-                usages.push(USAGE_SAMPLED);
             }
         }
         let dev_words: Vec<u32> = identity
@@ -992,7 +967,6 @@ mod tests {
             &fourccs,
             &mod_counts,
             &modifiers,
-            &usages,
             &plane_counts,
             &dev_words,
             &drv_words,

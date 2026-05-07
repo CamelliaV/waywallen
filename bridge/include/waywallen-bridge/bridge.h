@@ -141,7 +141,7 @@ int ww_bridge_send_format_caps(int sock, const ww_evt_format_caps_t *m);
  * `ww_bridge_send_format_caps`.
  *
  * Length invariants (mirrored on the daemon's `unflatten_caps`):
- *   modifiers_count == usages_count == plane_counts_count ==
+ *   modifiers_count == plane_counts_count ==
  *   sum(mod_counts[0..fourccs_count])
  *
  * `device_uuid` / `driver_uuid`: pass NULL to send 16 zero bytes
@@ -152,7 +152,6 @@ typedef struct ww_format_caps_caller {
     const uint32_t *fourccs;        uint32_t fourccs_count;
     const uint32_t *mod_counts;     uint32_t mod_counts_count;
     const uint64_t *modifiers;      uint32_t modifiers_count;
-    const uint32_t *usages;         uint32_t usages_count;
     const uint32_t *plane_counts;   uint32_t plane_counts_count;
     const uint8_t  *device_uuid;    /* NULL or 16 bytes */
     const uint8_t  *driver_uuid;    /* NULL or 16 bytes */
@@ -249,20 +248,16 @@ int ww_bridge_negotiation_contains(const ww_negotiation_state_t *neg,
  *   - `scratch_mod_counts`   [advertised_count]
  *   - `scratch_modifiers`    [advertised_count]
  *   - `scratch_plane_counts` [advertised_count]
- *   - `scratch_usages`       [advertised_count]
  *
- * `usage` is replicated to every entry of `scratch_usages` (typical
- * value: `WW_USAGE_SAMPLED`). Caller still fills the scalar
- * negotiation knobs (sync_caps, color_caps, mem_hints, extent_max,
- * UUIDs, drm_render_*) on `out` after this call. */
+ * Caller still fills the scalar negotiation knobs (sync_caps,
+ * color_caps, mem_hints, extent_max, UUIDs, drm_render_*) on `out`
+ * after this call. */
 void ww_bridge_negotiation_fill_format_caps(
     const ww_negotiation_state_t *neg,
-    uint32_t                      usage,
     uint32_t                     *scratch_fourccs,
     uint32_t                     *scratch_mod_counts,
     uint64_t                     *scratch_modifiers,
     uint32_t                     *scratch_plane_counts,
-    uint32_t                     *scratch_usages,
     ww_format_caps_caller_t      *out);
 
 

@@ -880,7 +880,7 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                 Some((fourccs, mod_counts, modifiers, total_mods))
             }
         };
-        let (fourccs, mod_counts, modifiers, usages, plane_counts) = match flat {
+        let (fourccs, mod_counts, modifiers, plane_counts) = match flat {
             None => {
                 log::warn!(
                     "[{}] zwp_linux_dmabuf_v1 exposed no formats — \
@@ -891,7 +891,6 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                     vec![N::DRM_FORMAT_ABGR8888, N::DRM_FORMAT_XRGB8888],
                     vec![1u32, 1],
                     vec![N::DRM_FORMAT_MOD_LINEAR, N::DRM_FORMAT_MOD_LINEAR],
-                    vec![N::USAGE_SAMPLED, N::USAGE_SAMPLED],
                     vec![1u32, 1],
                 )
             }
@@ -902,9 +901,8 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                     fourccs.len(),
                     modifiers.len()
                 );
-                let usages = vec![N::USAGE_SAMPLED; total_mods];
                 let plane_counts = vec![1u32; total_mods];
-                (fourccs, mod_counts, modifiers, usages, plane_counts)
+                (fourccs, mod_counts, modifiers, plane_counts)
             }
         };
         let _g = binding.send_lock.lock().unwrap();
@@ -914,7 +912,6 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                 fourccs,
                 mod_counts,
                 modifiers,
-                usages,
                 plane_counts,
                 device_uuid: vec![0, 0, 0, 0],
                 driver_uuid: vec![0, 0, 0, 0],

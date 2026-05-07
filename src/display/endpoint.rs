@@ -347,7 +347,7 @@ async fn run_frame_loop(
                     log::info!("display {display_id}: resized to {width}x{height}");
                 }
                 Some(Ok(Request::ConsumerCaps {
-                    fourccs, mod_counts, modifiers, usages, plane_counts,
+                    fourccs, mod_counts, modifiers, plane_counts,
                     device_uuid, driver_uuid, drm_render_major, drm_render_minor,
                     mem_hints, sync_caps, color_caps, extent_max_w, extent_max_h,
                 })) => {
@@ -355,7 +355,7 @@ async fn run_frame_loop(
                         major: drm_render_major, minor: drm_render_minor,
                     };
                     match crate::dma::negotiate::unflatten_caps(
-                        &fourccs, &mod_counts, &modifiers, &usages, &plane_counts,
+                        &fourccs, &mod_counts, &modifiers, &plane_counts,
                         &device_uuid, &driver_uuid, drm,
                         sync_caps, color_caps, mem_hints,
                         (extent_max_w, extent_max_h),

@@ -18,15 +18,6 @@
 extern "C" {
 #endif
 
-/* `usages` per (fourcc, modifier): how the producer/consumer can use
- * the buffer. Producer sets bits the allocator can satisfy;
- * consumer sets bits its sampler/scanout path requires. */
-#define WW_USAGE_SAMPLED          (1u << 0)
-#define WW_USAGE_STORAGE          (1u << 1)
-#define WW_USAGE_COLOR_ATTACHMENT (1u << 2)
-#define WW_USAGE_TRANSFER_SRC     (1u << 4)
-#define WW_USAGE_TRANSFER_DST     (1u << 5)
-
 /* `mem_hints`: where the dmabuf is backed. Topology-first picker:
  * cross-device emits 0 (bridge picks any dma-buf-exportable type);
  * same-device prefers DEVICE_LOCAL when both peers have it.

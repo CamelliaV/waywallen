@@ -358,25 +358,23 @@
     Encoding:
       Parallel arrays. `fourccs[i]` advertises a DRM format the
       producer can allocate; `mod_counts[i]` is the number of modifiers
-      it supports for that format. Modifiers/usages/plane_counts are
+      it supports for that format. Modifiers/plane_counts are
       flattened fourcc-major:
 
         modifiers[ sum(mod_counts[0..i]) .. +mod_counts[i] ]
-        usages[    same range ]
         plane_counts[ same range ]
 
-      Validation: modifiers.len == usages.len == plane_counts.len ==
+      Validation: modifiers.len == plane_counts.len ==
       sum(mod_counts).
 
+      Each peer locally filters its advertised modifier list by the
+      `VkFormatFeatureFlags` it actually needs (producer: write-side
+      features such as TRANSFER_DST + BLIT_DST or STORAGE_IMAGE;
+      consumer: SAMPLED + TRANSFER_SRC). Only the surviving modifiers
+      hit the wire — the daemon picks intersection without reading
+      any usage/feature hint.
+
     Bit definitions (mirrored across producer + consumer caps):
-      `usage` per (fourcc, modifier):
-        bit 0 = SAMPLED               can be sampled from a shader
-        bit 1 = STORAGE               GPU storage image
-        bit 2 = COLOR_ATTACHMENT      can be rendered into
-        bit 3 = DEPTH_STENCIL         depth/stencil target
-        bit 4 = TRANSFER_SRC          blit source
-        bit 5 = TRANSFER_DST          blit destination
-        bit 6 = SCANOUT               can be directly scanned out by KMS
       `mem_hints`:
         bit 0 = DEVICE_LOCAL          producer prefers VRAM placement
         bit 1 = HOST_VISIBLE          producer can also do GTT/system
@@ -406,7 +404,6 @@
     <arg name="fourccs" type="array" element="u32"/>
     <arg name="mod_counts" type="array" element="u32"/>
     <arg name="modifiers" type="array" element="u64"/>
-    <arg name="usages" type="array" element="u32"/>
     <arg name="plane_counts" type="array" element="u32"/>
     <arg name="device_uuid" type="array" element="u32"/>
     <arg name="driver_uuid" type="array" element="u32"/>

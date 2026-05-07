@@ -382,6 +382,10 @@ static int print_caps_json(const Options& opt) {
     pool_init.drm_render_major      = producer->drm_render_major();
     pool_init.drm_render_minor      = producer->drm_render_minor();
     pool_init.drm_render_fd         = producer->drm_render_fd();
+    /* Image plugin uses vkCmdCopyBufferToImage (TRANSFER_DST feature)
+     * to upload decoded pixels into the slot. */
+    pool_init.image_usage_flags     = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    pool_init.format_feature_flags  = VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
     ww_pool_t* pool = nullptr;
     if (int rc = ww_bridge_pool_create(WW_POOL_BACKEND_VULKAN, &pool_init, &pool);
@@ -471,10 +475,9 @@ static int print_caps_json(const Options& opt) {
         const uint32_t n  = caps.mod_counts.data[i];
         std::printf("    \"0x%08x\": [", fc);
         for (uint32_t j = 0; j < n; ++j) {
-            std::printf("%s\n      {\"modifier\": %llu, \"usage\": %u, \"plane_count\": %u}",
+            std::printf("%s\n      {\"modifier\": %llu, \"plane_count\": %u}",
                         j ? "," : "",
                         static_cast<unsigned long long>(caps.modifiers.data[cursor + j]),
-                        caps.usages.data[cursor + j],
                         caps.plane_counts.data[cursor + j]);
         }
         cursor += n;
@@ -629,6 +632,8 @@ int main(int argc, char** argv) {
     pool_init.drm_render_major      = producer->drm_render_major();
     pool_init.drm_render_minor      = producer->drm_render_minor();
     pool_init.drm_render_fd         = producer->drm_render_fd();
+    pool_init.image_usage_flags     = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    pool_init.format_feature_flags  = VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
     if (int rc = ww_bridge_pool_create(WW_POOL_BACKEND_VULKAN, &pool_init, &host.pool);
         rc != 0)

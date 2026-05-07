@@ -490,9 +490,12 @@ int main(int argc, char** argv) {
     pool_init.drm_render_fd         = producer->drm_render_fd();
     /* The bridge's slot VkImage will be the dst of our compute shader's
      * storage-image binding, so it needs STORAGE usage in addition to
-     * the default TRANSFER_DST. */
+     * the default TRANSFER_DST. The modifier filter mirrors the
+     * required features. */
     pool_init.image_usage_flags     = VK_IMAGE_USAGE_STORAGE_BIT
                                     | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    pool_init.format_feature_flags  = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
+                                    | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
     if (int rc = ww_bridge_pool_create(WW_POOL_BACKEND_VULKAN, &pool_init, &host.pool);
         rc != 0)

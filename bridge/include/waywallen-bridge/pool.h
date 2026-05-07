@@ -1,24 +1,5 @@
-/* waywallen-bridge — buffer pool + path-explicit modifier negotiation.
- *
- * The pool API moves all DMA-BUF allocation, modifier probing,
- * EGL/Vulkan import, and drm_syncobj management out of renderer
- * plugins and into the bridge. Plugins now do three things:
- *
- *   1) bring up an EGL display (mpv) or VkDevice (image),
- *   2) hand the bridge a backend descriptor (`ww_pool_*_init_t`),
- *   3) acquire a slot, render into it, hand the slot back with an
- *      acquire sync_fd. Bridge owns everything else.
- *
- * The protocol stays exactly as-is on the wire — the bridge encodes
- * `format_caps`, decodes `negotiate_buffers`, emits `bind_buffers` /
- * `frame_ready` / `release_syncobj` / `bind_failed` itself. Plugins
- * never call those entry points directly anymore.
- *
- * Path / mem-source classification lives in the daemon
- * (`negotiate.rs::pick`). The daemon ships a `ww_pool_directive_t` to
- * the renderer in every `negotiate_buffers` request; the bridge just
- * executes it. There is no plugin-side fallback.
- */
+// waywallen-bridge — buffer pool + path-explicit modifier negotiation.
+
 #ifndef WAYWALLEN_BRIDGE_POOL_H
 #define WAYWALLEN_BRIDGE_POOL_H
 
@@ -149,23 +130,13 @@ typedef struct ww_pool_vulkan_init {
     /* Optional render-node fd for drm_syncobj timeline export. If -1,
      * bridge opens its own /dev/dri/renderD12X. */
     int      drm_render_fd;
-    /* VkImageUsageFlags for the slot images bridge allocates. The
-     * producer is responsible for ensuring the negotiated DRM modifier's
-     * tiling-features cover these usages — when alloc fails, bridge
-     * emits bind_failed and the daemon re-picks.
-     *
-     * Bridge always OR-s VK_IMAGE_USAGE_TRANSFER_SRC_BIT into whatever
-     * the producer requests, because the consumer (display side) imports
-     * the dma-buf as TRANSFER_SRC-only and needs the modifier sub-layout
-     * to match. Producers therefore only need to pass the *write* usage
-     * they require (e.g. TRANSFER_DST_BIT for blit producers,
-     * COLOR_ATTACHMENT_BIT for direct-render producers).
-     *
-     * Pass 0 to use the default TRANSFER_DST_BIT (the SRC bit is added
-     * unconditionally regardless), which matches the "transfer-only
-     * producer + transfer-only consumer shadow" setup that all existing
-     * producers use. */
+    /* VkImageUsageFlags for VkImageCreateInfo.usage at slot allocation
+     * time. */
     uint32_t image_usage_flags;
+    /* VkFormatFeatureFlags the negotiated modifier's
+     * drmFormatModifierTilingFeatures must cover. 
+     * Pass 0 for the TRANSFER_DST_BIT default. */
+    uint32_t format_feature_flags;
 } ww_pool_vulkan_init_t;
 
 /* -----------------------------------------------------------------------

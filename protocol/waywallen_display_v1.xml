@@ -78,7 +78,7 @@
 
   v2 (modifier negotiation):
     - Consumer ships `consumer_caps` request immediately after
-      `register_display`. Carries fourcc/modifier/usage/plane_count
+      `register_display`. Carries fourcc/modifier/plane_count
       grids plus device_uuid + sync_caps + color_caps + mem_hints
       mirroring the producer-side `format_caps` event in ipc_v2.
     - Daemon pairs the consumer's caps with the bound renderer's caps,
@@ -204,19 +204,18 @@
   <!--
     Consumer capability declaration — sent immediately after
     `register_display`. Mirrors `format_caps` in waywallen-ipc-v2;
-    same parallel-array layout, same bit definitions for usage /
-    sync_caps / color_caps / mem_hints. The daemon stores it
-    alongside the renderer's caps and gates `bind_buffers` dispatch
-    on a successful `negotiate::pick(producer, consumer)`.
+    same parallel-array layout, same bit definitions for sync_caps /
+    color_caps / mem_hints. The daemon stores it alongside the
+    renderer's caps and gates `bind_buffers` dispatch on a successful
+    `negotiate::pick(producer, consumer)`.
 
     Encoding: see waywallen-ipc-v2 `format_caps` doc. Validation:
-    modifiers.len == usages.len == plane_counts.len == sum(mod_counts).
+    modifiers.len == plane_counts.len == sum(mod_counts).
   -->
   <request name="consumer_caps" opcode="6">
     <arg name="fourccs" type="array" element="u32"/>
     <arg name="mod_counts" type="array" element="u32"/>
     <arg name="modifiers" type="array" element="u64"/>
-    <arg name="usages" type="array" element="u32"/>
     <arg name="plane_counts" type="array" element="u32"/>
     <arg name="device_uuid" type="array" element="u32"/>
     <arg name="driver_uuid" type="array" element="u32"/>

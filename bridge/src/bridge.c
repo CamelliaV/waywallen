@@ -357,8 +357,6 @@ int ww_bridge_send_format_caps_v2(int sock,
     e.mod_counts.data     = (uint32_t *)m->mod_counts;
     e.modifiers.count     = m->modifiers_count;
     e.modifiers.data      = (uint64_t *)m->modifiers;
-    e.usages.count        = m->usages_count;
-    e.usages.data         = (uint32_t *)m->usages;
     e.plane_counts.count  = m->plane_counts_count;
     e.plane_counts.data   = (uint32_t *)m->plane_counts;
     e.device_uuid.count   = 4;
@@ -525,12 +523,10 @@ int ww_bridge_negotiation_contains(const ww_negotiation_state_t *neg,
 
 void ww_bridge_negotiation_fill_format_caps(
     const ww_negotiation_state_t *neg,
-    uint32_t                      usage,
     uint32_t                     *scratch_fourccs,
     uint32_t                     *scratch_mod_counts,
     uint64_t                     *scratch_modifiers,
     uint32_t                     *scratch_plane_counts,
-    uint32_t                     *scratch_usages,
     ww_format_caps_caller_t      *out) {
     if (!neg || !out) return;
 
@@ -539,12 +535,11 @@ void ww_bridge_negotiation_fill_format_caps(
 
     /* Walk advertised, collapsing contiguous same-fourcc runs into
      * (fourccs[], mod_counts[]) and copying flat parallel arrays
-     * for modifiers/plane_counts/usages. */
+     * for modifiers/plane_counts. */
     for (uint32_t i = 0; i < n; ++i) {
         const ww_format_entry_t *e = &neg->advertised[i];
         scratch_modifiers[i]    = e->modifier;
         scratch_plane_counts[i] = e->plane_count;
-        scratch_usages[i]       = usage;
 
         if (fourcc_count == 0
             || scratch_fourccs[fourcc_count - 1] != e->fourcc) {
@@ -562,8 +557,6 @@ void ww_bridge_negotiation_fill_format_caps(
     out->mod_counts_count   = fourcc_count;
     out->modifiers          = scratch_modifiers;
     out->modifiers_count    = n;
-    out->usages             = scratch_usages;
-    out->usages_count       = n;
     out->plane_counts       = scratch_plane_counts;
     out->plane_counts_count = n;
 }
