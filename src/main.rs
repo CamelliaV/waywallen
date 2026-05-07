@@ -685,6 +685,14 @@ async fn async_main() -> anyhow::Result<()> {
         log::warn!("DBus Ready emit failed: {e}");
     }
 
+    // Latch DaemonReady and broadcast a fresh StatusSync so live WS
+    // clients flip phase=READY. Late connections pick the latched
+    // value up via the connect-time snapshot.
+    state.events.publish(crate::events::GlobalEvent::DaemonReady);
+    state
+        .events
+        .publish(crate::events::GlobalEvent::StatusChanged);
+
     // Tray icon (StatusNotifierItem) — best-effort. Requires a
     // StatusNotifierWatcher (Plasma, AppIndicator extension, waybar
     // tray, ...). No host ⇒ warn & keep running headless.

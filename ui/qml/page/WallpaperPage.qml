@@ -17,20 +17,33 @@ MD.Page {
         id: scanQuery
     }
 
-    // Daemon-driven scans (manual click, LibraryAdd/Remove, startup)
+    // Daemon-driven syncs (manual click, LibraryAdd/Remove, startup)
     // all reach the UI through `Notify` (mirrors the daemon's
     // `GlobalEvent` broadcasts). Toast UX is handled here via
     // `Action.toast`; Notify itself is intentionally toast-free.
     Connections {
         target: W.Notify
-        function onWallpaperScanCompleted(count, error) {
+        function onWallpaperSyncFinished(count, error) {
             if (error && error.length > 0) {
-                W.Action.toast("Scan failed: " + error);
+                W.Action.toast("Sync failed: " + error);
             } else {
                 W.Action.toast("Scanned " + count + " wallpapers");
             }
             wallpaperQuery.reload();
         }
+        function onDaemonReady() {
+            root.reloadAll();
+        }
+    }
+
+    function reloadAll() {
+        pluginQuery.reload();
+        filterSettingsGet.reload();
+    }
+
+    Component.onCompleted: {
+        if (W.Notify.daemonPhase === W.Notify.DaemonPhase.Ready)
+            reloadAll();
     }
 
     W.WallpaperApplyQuery {
@@ -39,7 +52,6 @@ MD.Page {
 
     W.RendererPluginListQuery {
         id: pluginQuery
-        Component.onCompleted: reload()
     }
 
     W.LibraryAutoDetectQuery {
@@ -54,11 +66,25 @@ MD.Page {
                         global.wallpaperFilterLogics || []);
             wallpaperFilterModel.doQuery();
         }
-        Component.onCompleted: reload()
     }
 
     W.SettingsSetQuery {
         id: filterSettingsSet
+    }
+
+    // QAbstractItemModel doesn't auto-expose `count` as a Q_PROPERTY —
+    // mirror it here so visibility bindings re-evaluate on row changes.
+    property int filterRuleCount: 0
+    function _recomputeFilterRuleCount() {
+        root.filterRuleCount = wallpaperFilterModel.rowCount();
+    }
+
+    Connections {
+        target: wallpaperFilterModel
+        function onRowsInserted()   { root._recomputeFilterRuleCount(); }
+        function onRowsRemoved()    { root._recomputeFilterRuleCount(); }
+        function onModelReset()     { root._recomputeFilterRuleCount(); }
+        function onLayoutChanged()  { root._recomputeFilterRuleCount(); }
     }
 
     W.WallpaperFilterRuleModel {
@@ -198,9 +224,9 @@ MD.Page {
                                 // and avoids stacking ineffective triggers).
                                 enabled: !W.Notify.scanInProgress
                                 // Daemon answers immediately and pushes
-                                // completion via `WallpaperScanCompleted`,
+                                // completion via `WallpaperSyncFinished`,
                                 // which the `Connections` block on
-                                // `scanQuery` handles (Notify + list reload).
+                                // `Notify` handles (toast + list reload).
                                 onTriggered: scanQuery.reload()
                             }
                         ]
@@ -283,7 +309,15 @@ MD.Page {
 
                         MD.BusyButton {
                             Layout.alignment: Qt.AlignHCenter
+                            // Only offer auto-detect when the empty grid is
+                            // genuinely "fresh user, nothing configured" —
+                            // not when filters are excluding existing rows
+                            // and not when libraries are already registered
+                            // (in that case the user wants Refresh, not a
+                            // second round of auto-detection).
                             visible: !parent.scanning
+                                  && root.filterRuleCount === 0
+                                  && W.App.libraryManager.count === 0
                             text: "Auto detect libraries"
                             busy: autoDetectQuery.querying
                             mdState.type: MD.Enum.BtFilledTonal

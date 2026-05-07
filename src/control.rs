@@ -638,7 +638,7 @@ pub async fn libraries_by_plugin_name(
 pub async fn refresh_sources(app: &Arc<AppState>) -> Result<usize> {
     use std::sync::atomic::Ordering;
     app.scan_in_progress.store(true, Ordering::SeqCst);
-    app.events.publish(crate::events::GlobalEvent::ScanStarted);
+    // Sync start is observable to UIs via `StatusSync.scan_in_progress`.
     app.events
         .publish(crate::events::GlobalEvent::StatusChanged);
 
@@ -648,10 +648,10 @@ pub async fn refresh_sources(app: &Arc<AppState>) -> Result<usize> {
     match &result {
         Ok(count) => app
             .events
-            .publish(crate::events::GlobalEvent::ScanCompleted { count: *count }),
+            .publish(crate::events::GlobalEvent::SyncFinished { count: *count }),
         Err(e) => app
             .events
-            .publish(crate::events::GlobalEvent::ScanFailed(format!("{e:#}"))),
+            .publish(crate::events::GlobalEvent::SyncFailed(format!("{e:#}"))),
     }
     app.events
         .publish(crate::events::GlobalEvent::StatusChanged);

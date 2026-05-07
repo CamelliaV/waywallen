@@ -12,7 +12,7 @@ namespace waywallen
 {
 
 /// UI-side mirror of the daemon's `GlobalEvent` broadcasts. The
-/// daemon serializes process-wide events (scan lifecycle etc.) onto
+/// daemon serializes process-wide events (sync lifecycle etc.) onto
 /// `ServerFrame.event` over the WS; `Notify` subscribes to
 /// `Backend::eventReceived` once at construction and re-emits each
 /// daemon-global variant as a strongly-typed Qt signal so QML / C++
@@ -26,16 +26,29 @@ export class Notify : public QObject {
     QML_ELEMENT
     QML_SINGLETON
 
+public:
+    /// Mirror of `pb::DaemonPhase`. UI gates the startup dialog and
+    /// initial query fan-out on this; default is `Starting` so the
+    /// dialog wins until the first authoritative `StatusSync` arrives.
+    enum class DaemonPhase {
+        Starting = 0,
+        Ready    = 1,
+    };
+    Q_ENUM(DaemonPhase)
+
     /// Mirrors `StatusSync.scan_in_progress`. Bind QML directly to
-    /// this property — no need to count `wallpaperScanStarted`/
-    /// `wallpaperScanCompleted` transitions, which can be lost on lag
-    /// or late connect.
+    /// this property — no need to count transient sync events, which
+    /// can be lost on lag or late connect.
     Q_PROPERTY(bool scanInProgress READ scanInProgress NOTIFY statusChanged FINAL)
     /// Mirrors `StatusSync.active_task_count`. Number of TaskManager
     /// tasks currently in `Running`.
     Q_PROPERTY(quint32 activeTaskCount READ activeTaskCount NOTIFY statusChanged FINAL)
+    /// Mirrors `StatusSync.phase`. Default `Starting` — UI shows a
+    /// startup dialog until this flips to `Ready`. Reset to
+    /// `Starting` when the WS disconnects so a daemon restart triggers
+    /// the dialog again.
+    Q_PROPERTY(DaemonPhase daemonPhase READ daemonPhase NOTIFY statusChanged FINAL)
 
-public:
     Notify(QObject* parent);
     ~Notify() override;
     // QML should always reach us through `create` so we stay a
@@ -47,15 +60,14 @@ public:
 
     auto scanInProgress() const -> bool { return m_scan_in_progress; }
     auto activeTaskCount() const -> quint32 { return m_active_task_count; }
+    auto daemonPhase() const -> DaemonPhase { return m_daemon_phase; }
 
 Q_SIGNALS:
-    /// Daemon began a wallpaper rescan (`GlobalEvent::ScanStarted`).
-    void wallpaperScanStarted();
-    /// Daemon finished a wallpaper rescan
-    /// (`GlobalEvent::ScanCompleted` / `ScanFailed`). `count` is the
-    /// total entry count after sync (0 on failure); `error` is empty
-    /// on success, otherwise a one-line reason.
-    void wallpaperScanCompleted(quint32 count, const QString& error);
+    /// Daemon finished a wallpaper sync (success or failure). `count`
+    /// is the total entry count after sync (0 on failure); `error` is
+    /// empty on success, otherwise a one-line reason. Sync start is
+    /// observable via the `scanInProgress` property.
+    void wallpaperSyncFinished(quint32 count, const QString& error);
     /// Daemon added one or more libraries — manually via `LibraryAdd`
     /// or via `LibraryAutoDetect`. `paths` is the absolute roots that
     /// were just inserted. The matching `LibraryChanged` per-library
@@ -63,10 +75,16 @@ Q_SIGNALS:
     /// transient toast trigger.
     void librariesAdded(const QStringList& paths);
     /// Emitted whenever the daemon pushes a `StatusSync` snapshot
-    /// (initial connect + every change). The `scanInProgress` and
-    /// `activeTaskCount` properties already reflect the new values
-    /// when this fires.
+    /// (initial connect + every change), or on local resets such as
+    /// WS disconnect. The `scanInProgress` / `activeTaskCount` /
+    /// `daemonPhase` properties already reflect the new values.
     void statusChanged();
+    /// Edge-triggered: fires when `daemonPhase` transitions
+    /// `Starting → Ready`. Pages that need to fan out initial queries
+    /// should listen here AND, in `Component.onCompleted`, level-check
+    /// `daemonPhase === Ready` for pages constructed after the daemon
+    /// is already ready.
+    void daemonReady();
     /// Daemon broadcast a `SettingsChanged` event after a successful
     /// `SettingsSet` (or schema-driven startup reconciliation). UI
     /// settings forms should re-fetch via `SettingsGetQuery` to pick
@@ -76,8 +94,9 @@ Q_SIGNALS:
     void settingsChanged();
 
 private:
-    bool    m_scan_in_progress { false };
-    quint32 m_active_task_count { 0 };
+    bool        m_scan_in_progress { false };
+    quint32     m_active_task_count { 0 };
+    DaemonPhase m_daemon_phase { DaemonPhase::Starting };
 };
 
 } // namespace waywallen

@@ -9,7 +9,15 @@ import waywallen.ui as W
 MD.Popup {
     id: root
 
-    visible: W.DaemonDBusClient.status !== W.DaemonDBusClient.Connected
+    // Dialog is the single anchor for "daemon is not usable yet". It
+    // wins on either of two orthogonal conditions:
+    //   - DBus says the daemon process is missing / version-mismatched
+    //   - DBus is connected but the daemon's `phase` is still Starting
+    //     (WS not bound yet, or core services still booting)
+    readonly property bool dbusConnected: W.DaemonDBusClient.status === W.DaemonDBusClient.Connected
+    readonly property bool daemonStarting: dbusConnected && W.Notify.daemonPhase !== W.Notify.DaemonPhase.Ready
+
+    visible: !dbusConnected || daemonStarting
     closePolicy: T.Popup.NoAutoClose
     dim: true
     modal: true
@@ -26,13 +34,13 @@ MD.Popup {
         }
     }
 
-    onVisibleChanged: if (visible)
+    onVisibleChanged: if (visible && !daemonStarting)
         refreshProcs()
 
     Connections {
         target: W.DaemonDBusClient
         function onStatusChanged() {
-            if (root.visible)
+            if (root.visible && !root.daemonStarting)
                 root.refreshProcs();
         }
     }
@@ -43,6 +51,8 @@ MD.Popup {
         MD.DialogHeader {
             Layout.fillWidth: true
             title: {
+                if (root.daemonStarting)
+                    return "Starting…";
                 switch (W.DaemonDBusClient.status) {
                 case W.DaemonDBusClient.Disconnected:
                     return "Daemon not running";
@@ -61,6 +71,8 @@ MD.Popup {
             Layout.rightMargin: 24
             wrapMode: Text.WordWrap
             text: {
+                if (root.daemonStarting)
+                    return "waywallen is initializing core services. This usually takes a few seconds.";
                 switch (W.DaemonDBusClient.status) {
                 case W.DaemonDBusClient.Disconnected:
                     return "The waywallen daemon is not on the session bus.";
@@ -73,6 +85,13 @@ MD.Popup {
             }
         }
 
+        MD.LinearIndicator {
+            Layout.fillWidth: true
+            Layout.leftMargin: 24
+            Layout.rightMargin: 24
+            visible: root.daemonStarting
+        }
+
         MD.VerticalListView {
             id: m_proc_list
             Layout.fillWidth: true
@@ -80,7 +99,7 @@ MD.Popup {
             Layout.rightMargin: 16
             Layout.preferredWidth: 300
             implicitHeight: Math.min(contentHeight, 200)
-            visible: m_proc_model.count > 0
+            visible: !root.daemonStarting && m_proc_model.count > 0
             clip: true
             spacing: 4
             model: ListModel {
@@ -136,6 +155,7 @@ MD.Popup {
                 text: "Restart"
                 mdState.type: MD.Enum.BtText
                 T.DialogButtonBox.buttonRole: T.DialogButtonBox.AcceptRole
+                visible: !root.daemonStarting
                 onClicked: W.DaemonDBusClient.launchDaemon()
             }
         }

@@ -306,7 +306,7 @@ message WallpaperListResponse {
 message WallpaperScanRequest {}
 // Ack-only — the rescan now runs asynchronously on the daemon. `count`
 // is `0` for newly-queued scans; the actual entry count arrives in the
-// later `WallpaperScanCompleted` server event so the UI does not have
+// later `WallpaperSyncFinished` server event so the UI does not have
 // to block on the response.
 message WallpaperScanResponse {
   uint32 count = 1;
@@ -523,24 +523,37 @@ message Event {
     LibrarySnapshot        library_snapshot          = 7;
     LibraryChanged         library_changed           = 8;
     LibraryRemoved         library_removed           = 9;
-    WallpaperScanStarted   wallpaper_scan_started    = 10;
-    WallpaperScanCompleted wallpaper_scan_completed  = 11;
+    WallpaperSyncFinished  wallpaper_sync_finished   = 11;
     LibrariesAdded         libraries_added           = 12;
     StatusSync             status_sync               = 13;
     SettingsChanged        settings_changed          = 14;
   }
 }
 
+// Coarse daemon lifecycle. Orthogonal to `StatusSync.scan_in_progress`.
+enum DaemonPhase {
+  DAEMON_PHASE_UNSPECIFIED = 0;
+  // Booting: WS may already accept connections, but the UI should
+  // avoid firing queries (data may be empty / settings may still be
+  // reconciling). Show a startup dialog instead.
+  DAEMON_PHASE_STARTING = 1;
+  // Core services are up (WS bound, DBus published). UI can query.
+  // A scan may still be running — that's `scan_in_progress`.
+  DAEMON_PHASE_READY = 2;
+}
+
 // Snapshot of daemon-side runtime state. Pushed on WS connect and on
-// every change that affects any field (scan transitions, task
-// lifecycle). Authoritative — start/end events are best-effort
-// notifications, but `StatusSync` is the field UI binds to for
-// closed-loop state (e.g. spinner visibility).
+// every change that affects any field (phase, scan, task lifecycle).
+// Authoritative — transient events are best-effort notifications, but
+// `StatusSync` is the field UI binds to for closed-loop state (e.g.
+// spinner visibility, startup dialog).
 message StatusSync {
   // True while a wallpaper rescan (`refresh_sources`) is in flight.
   bool scan_in_progress = 1;
   // Count of TaskManager tasks currently in `Running` state.
   uint32 active_task_count = 2;
+  // Daemon lifecycle phase. UI gates the startup dialog on this.
+  DaemonPhase phase = 3;
 }
 
 // One or more libraries were just added — by `LibraryAdd` (one path)
@@ -550,16 +563,12 @@ message LibrariesAdded {
   repeated string paths = 1;
 }
 
-// A wallpaper rescan has started on the daemon (manual via
-// `WallpaperScan`, or automatic after `LibraryAdd`/`LibraryRemove` /
-// at startup). UI may show a transient "scanning…" affordance.
-message WallpaperScanStarted {}
-
-// A wallpaper rescan finished. `count` is the total entry count after
+// A wallpaper sync finished. `count` is the total entry count after
 // the swap; `error` is empty on success, otherwise a one-line reason.
 // UI typically reacts with a `Notify` toast and a `WallpaperList`
 // refetch — daemon does not push the list itself, only the trigger.
-message WallpaperScanCompleted {
+// Sync start is observable via `StatusSync.scan_in_progress`.
+message WallpaperSyncFinished {
   uint32 count = 1;
   string error = 2;
 }

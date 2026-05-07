@@ -42,8 +42,12 @@ using proto::WallpaperListRequest;
 using proto::WallpaperListResponse;
 using proto::WallpaperScanRequest;
 using proto::WallpaperScanResponse;
+using proto::WallpaperSyncFinished;
 using proto::WallpaperApplyRequest;
 using proto::WallpaperApplyResponse;
+
+using proto::StatusSync;
+using proto::DaemonPhaseGadget::DaemonPhase;
 
 using proto::SourceListRequest;
 using proto::SourceListResponse;

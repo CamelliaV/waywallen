@@ -491,10 +491,16 @@ fn status_sync_event(state: &Arc<AppState>) -> pb::Event {
         .into_iter()
         .filter(|r| matches!(r.state, tasks::TaskState::Running))
         .count() as u32;
+    let phase = if state.events.is_daemon_ready() {
+        pb::DaemonPhase::Ready
+    } else {
+        pb::DaemonPhase::Starting
+    };
     pb::Event {
         payload: Some(pb::event::Payload::StatusSync(pb::StatusSync {
             scan_in_progress,
             active_task_count,
+            phase: phase as i32,
         })),
     }
 }
@@ -504,22 +510,17 @@ fn status_sync_event(state: &Arc<AppState>) -> pb::Event {
 /// daemon-internal (boot phase markers, restore lifecycle).
 fn global_event_to_pb(e: &GlobalEvent, state: &Arc<AppState>) -> Option<pb::Event> {
     match e {
-        GlobalEvent::ScanStarted => Some(pb::Event {
-            payload: Some(pb::event::Payload::WallpaperScanStarted(
-                pb::WallpaperScanStarted {},
-            )),
-        }),
-        GlobalEvent::ScanCompleted { count } => Some(pb::Event {
-            payload: Some(pb::event::Payload::WallpaperScanCompleted(
-                pb::WallpaperScanCompleted {
+        GlobalEvent::SyncFinished { count } => Some(pb::Event {
+            payload: Some(pb::event::Payload::WallpaperSyncFinished(
+                pb::WallpaperSyncFinished {
                     count: *count as u32,
                     error: String::new(),
                 },
             )),
         }),
-        GlobalEvent::ScanFailed(msg) => Some(pb::Event {
-            payload: Some(pb::event::Payload::WallpaperScanCompleted(
-                pb::WallpaperScanCompleted {
+        GlobalEvent::SyncFailed(msg) => Some(pb::Event {
+            payload: Some(pb::event::Payload::WallpaperSyncFinished(
+                pb::WallpaperSyncFinished {
                     count: 0,
                     error: msg.clone(),
                 },
@@ -559,6 +560,7 @@ fn global_event_to_pb(e: &GlobalEvent, state: &Arc<AppState>) -> Option<pb::Even
         }
         GlobalEvent::SourcesReady
         | GlobalEvent::DisplayReady
+        | GlobalEvent::DaemonReady
         | GlobalEvent::RestoreApplied(_)
         | GlobalEvent::RestoreFailed(_)
         | GlobalEvent::StatusChanged => None,
@@ -829,7 +831,7 @@ async fn dispatch_inner(
         Req::WallpaperScan(_) => {
             // Fire-and-forget: kick the rescan onto the TaskManager and
             // return immediately. Completion (or failure) reaches the
-            // UI via the `WallpaperScanCompleted` server event, so the
+            // UI via the `WallpaperSyncFinished` server event, so the
             // request is just an ack. `spawn_async_unique` collapses
             // overlapping triggers (rapid clicks, library churn) under
             // one in-flight scan.

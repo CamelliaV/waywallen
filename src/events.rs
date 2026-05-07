@@ -6,11 +6,14 @@
 //!     fan-out notifications. Late subscribers miss historical events;
 //!     consumers that need a "did this happen?" answer should use the
 //!     latched flags instead.
-//!   - `sources_ready` / `display_ready`: `tokio::sync::watch<bool>`
-//!     channels acting as one-shot phase markers. Once flipped to
-//!     `true`, late subscribers see the latched value via
-//!     `wait_for(|v| *v)`. This is what the restore coordinator
-//!     awaits — it does not care if it missed the original publish.
+//!   - `sources_ready` / `display_ready` / `daemon_ready`:
+//!     `tokio::sync::watch<bool>` channels acting as one-shot phase
+//!     markers. Once flipped to `true`, late subscribers see the
+//!     latched value via `wait_for(|v| *v)`. This is what the restore
+//!     coordinator awaits — it does not care if it missed the original
+//!     publish. `daemon_ready` is also surfaced over the wire as
+//!     `StatusSync.phase` so reconnecting UIs derive truth from a
+//!     snapshot rather than counting events.
 //!
 //! Adding a new latched phase marker means a new `watch<bool>`
 //! field; adding a new transient event means a new variant on
@@ -40,16 +43,20 @@ pub enum GlobalEvent {
     /// the formatted error so log subscribers don't need a typed
     /// error variant.
     RestoreFailed(String),
-    /// A wallpaper rescan (`refresh_sources`) just started. WS clients
-    /// translate this to `pb::Event::WallpaperScanStarted`. Not latched
-    /// — late subscribers do not see prior scans, which is fine because
-    /// they re-fetch the list on connect anyway.
-    ScanStarted,
-    /// A wallpaper rescan finished successfully; `count` is the total
-    /// entry count after the swap.
-    ScanCompleted { count: usize },
-    /// A wallpaper rescan failed; the string is the formatted error.
-    ScanFailed(String),
+    /// Core services are up (WS bound, DBus published). Latched so
+    /// late subscribers (UIs that connect well after boot) can still
+    /// observe the phase via `is_daemon_ready`. The wire surface is
+    /// `StatusSync.phase`, not a transient event — receivers should
+    /// react to the next `StatusSync` snapshot.
+    DaemonReady,
+    /// A wallpaper sync finished successfully; `count` is the total
+    /// entry count after the swap. Sync start is observable via
+    /// `StatusSync.scan_in_progress` — no separate started event.
+    SyncFinished { count: usize },
+    /// A wallpaper sync failed; the string is the formatted error.
+    /// Maps to the same wire message as `SyncFinished` with `error`
+    /// populated.
+    SyncFailed(String),
     /// One or more libraries were just added — manually via
     /// `LibraryAdd` (single path) or via `LibraryAutoDetect` (one or
     /// more). UI mirrors this through `Notify` and surfaces a toast.
@@ -74,6 +81,7 @@ pub struct EventBus {
     bus: broadcast::Sender<GlobalEvent>,
     sources_ready: watch::Sender<bool>,
     display_ready: watch::Sender<bool>,
+    daemon_ready: watch::Sender<bool>,
 }
 
 impl Default for EventBus {
@@ -87,10 +95,12 @@ impl EventBus {
         let (bus, _) = broadcast::channel(cap);
         let (sources_ready, _) = watch::channel(false);
         let (display_ready, _) = watch::channel(false);
+        let (daemon_ready, _) = watch::channel(false);
         Self {
             bus,
             sources_ready,
             display_ready,
+            daemon_ready,
         }
     }
 
@@ -107,6 +117,9 @@ impl EventBus {
             }
             GlobalEvent::DisplayReady => {
                 self.display_ready.send_replace(true);
+            }
+            GlobalEvent::DaemonReady => {
+                self.daemon_ready.send_replace(true);
             }
             _ => {}
         }
@@ -125,12 +138,20 @@ impl EventBus {
         self.display_ready.subscribe()
     }
 
+    pub fn watch_daemon_ready(&self) -> watch::Receiver<bool> {
+        self.daemon_ready.subscribe()
+    }
+
     pub fn is_sources_ready(&self) -> bool {
         *self.sources_ready.borrow()
     }
 
     pub fn is_display_ready(&self) -> bool {
         *self.display_ready.borrow()
+    }
+
+    pub fn is_daemon_ready(&self) -> bool {
+        *self.daemon_ready.borrow()
     }
 }
 
@@ -176,5 +197,19 @@ mod tests {
         bus.publish(GlobalEvent::DisplayReady);
         bus.publish(GlobalEvent::DisplayReady);
         assert!(bus.is_display_ready());
+    }
+
+    #[tokio::test]
+    async fn daemon_ready_is_latched_for_late_subscribers() {
+        let bus = EventBus::default();
+        assert!(!bus.is_daemon_ready());
+        bus.publish(GlobalEvent::DaemonReady);
+        assert!(bus.is_daemon_ready());
+        let mut rx = bus.watch_daemon_ready();
+        let v = tokio::time::timeout(Duration::from_millis(50), rx.wait_for(|v| *v))
+            .await
+            .expect("late subscribe blocked")
+            .expect("watch closed");
+        assert!(*v);
     }
 }

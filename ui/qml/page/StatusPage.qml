@@ -13,8 +13,6 @@ MD.Page {
     showBackground: false
     title: 'Status'
 
-    readonly property bool anyQuerying: healthQuery.querying || rendererQuery.querying || pluginQuery.querying || sourceQuery.querying || settingsQuery.querying
-
     component SectionTitle: MD.Text {
         typescale: MD.Token.typescale.title_medium
         color: MD.Token.color.on_surface
@@ -36,32 +34,37 @@ MD.Page {
 
     W.HealthQuery {
         id: healthQuery
-        Component.onCompleted: reload()
     }
 
     W.RendererListQuery {
         id: rendererQuery
-        Component.onCompleted: reload()
     }
 
     W.RendererPluginListQuery {
         id: pluginQuery
-        Component.onCompleted: reload()
     }
 
     W.SettingsGetQuery {
         id: settingsQuery
-        Component.onCompleted: reload()
     }
 
-    // Re-fetch settings whenever a peer or our own write triggers a
-    // SettingsChanged broadcast. The open dialog's `syncCurrent` keeps
-    // local pending edits intact.
+    // Queries fan out only after the daemon is Ready (avoid hitting
+    // a half-booted daemon at UI startup). `daemonReady` is edge-
+    // triggered, so pages constructed AFTER ready also need the level
+    // check in `Component.onCompleted`.
     Connections {
         target: W.Notify
+        function onDaemonReady() {
+            root.reloadAll();
+        }
         function onSettingsChanged() {
             settingsQuery.reload();
         }
+    }
+
+    Component.onCompleted: {
+        if (W.Notify.daemonPhase === W.Notify.DaemonPhase.Ready)
+            reloadAll();
     }
 
     Connections {
@@ -82,7 +85,6 @@ MD.Page {
 
     W.SourceListQuery {
         id: sourceQuery
-        Component.onCompleted: reload()
     }
 
     function reloadAll() {
@@ -180,7 +182,7 @@ MD.Page {
                         }
 
                         MD.Text {
-                            text: healthQuery.state || (healthQuery.querying ? "Loading…" : "unknown")
+                            text: healthQuery.state || "unknown"
                             typescale: MD.Token.typescale.body_medium
                             color: MD.Token.color.on_surface
                         }
@@ -200,7 +202,7 @@ MD.Page {
                     SectionHint {
                         readonly property var liveRenderers: W.App.rendererManager.renderers
                         visible: !liveRenderers || liveRenderers.length === 0
-                        text: rendererQuery.querying ? "Loading…" : "No active renderers"
+                        text: "No active renderers"
                     }
 
                     ListView {
@@ -259,7 +261,7 @@ MD.Page {
 
                     SectionHint {
                         visible: !pluginQuery.renderers || pluginQuery.renderers.length === 0
-                        text: pluginQuery.querying ? "Loading…" : "No renderer plugins"
+                        text: "No renderer plugins"
                     }
 
                     ListView {
@@ -335,7 +337,7 @@ MD.Page {
 
                     SectionHint {
                         visible: !sourceQuery.sources || sourceQuery.sources.length === 0
-                        text: sourceQuery.querying ? "Loading…" : "No source plugins loaded"
+                        text: "No source plugins loaded"
                     }
 
                     ListView {

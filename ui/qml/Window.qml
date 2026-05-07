@@ -25,7 +25,13 @@ MD.ApplicationWindow {
 
     W.HealthQuery {
         id: healthQuery
-        Component.onCompleted: reload()
+    }
+
+    Connections {
+        target: W.Notify
+        function onDaemonReady() {
+            healthQuery.reload();
+        }
     }
 
     property int currentPage: 0
@@ -55,6 +61,12 @@ MD.ApplicationWindow {
 
     Component.onCompleted: {
         currentPageChanged();
+        // Level-check for the case where the daemon is already Ready
+        // before this window finishes constructing (UI launched
+        // standalone against a running daemon, page reload, etc.)
+        // — `daemonReady` is edge-triggered and won't fire then.
+        if (W.Notify.daemonPhase === W.Notify.DaemonPhase.Ready)
+            healthQuery.reload();
     }
 
     MD.SnakeView {
