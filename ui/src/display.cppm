@@ -41,6 +41,10 @@ class Display : public QObject {
     /// plus `fillmodeSet` / `alignSet` / `clearRgbaSet` booleans
     /// indicating whether each field is explicitly overridden vs. inherited.
     Q_PROPERTY(QVariantMap layoutOverride READ layoutOverride NOTIFY layoutChanged FINAL)
+    // DRM render-node id of the GPU this display's consumer is on.
+    // Set once at register_display time; never changes for a live display.
+    Q_PROPERTY(quint32 drmRenderMajor READ drmRenderMajor CONSTANT FINAL)
+    Q_PROPERTY(quint32 drmRenderMinor READ drmRenderMinor CONSTANT FINAL)
 
 public:
     explicit Display(const proto::DisplayInfo& info, QObject* parent = nullptr);
@@ -53,6 +57,8 @@ public:
     auto links() const -> const QVariantList& { return m_links; }
     auto effectiveLayout() const -> const QVariantMap& { return m_effective_layout; }
     auto layoutOverride() const -> const QVariantMap& { return m_layout_override; }
+    auto drmRenderMajor() const -> quint32 { return m_drm_render_major; }
+    auto drmRenderMinor() const -> quint32 { return m_drm_render_minor; }
 
     /// Diff-update from a freshly-received `DisplayInfo`. Only emits
     /// the signals for properties that actually changed.
@@ -77,6 +83,8 @@ private:
     QVariantList m_links;
     QVariantMap  m_effective_layout;
     QVariantMap  m_layout_override;
+    quint32      m_drm_render_major;
+    quint32      m_drm_render_minor;
 };
 
 /// Singleton model for all currently-registered displays. Fed by:

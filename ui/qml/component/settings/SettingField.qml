@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Templates as T
 import QtQuick.Layouts
 import Qcm.Material as MD
+import waywallen.ui as W
 
 // Renders one schema-driven control. The schema dict comes verbatim
 // from `RendererPluginListQuery.renderers[i].settings[j]`; we never
@@ -42,9 +43,13 @@ ColumnLayout {
     readonly property string description: schema.description_key || ""
     readonly property bool needsRestart: schema.identity === true
 
+    readonly property bool isRenderNode: schema.key === "render_node"
+
     readonly property bool isTextField: {
         const t = schema.type;
         if (t === kBool)
+            return false;
+        if (root.isRenderNode)
             return false;
         if (t === kString)
             return !(schema.choices && schema.choices.length > 0);
@@ -119,6 +124,8 @@ ColumnLayout {
         Layout.fillWidth: true
 
         sourceComponent: {
+            if (root.isRenderNode)
+                return renderNodeField;
             switch (root.schema.type) {
             case root.kBool:
                 return boolField;
@@ -217,6 +224,34 @@ ColumnLayout {
             model: root.schema.choices
             currentIndex: Math.max(0, root.schema.choices.indexOf(root.value))
             onActivated: root._emit(root.schema.choices[currentIndex])
+        }
+    }
+
+    // GPU picker: empty value ⇒ "Auto" (renderer picks a device); otherwise
+    // the value is a DRM render-node path matching one Gpu.renderNode.
+    // Reads the live GPU list from App.gpuManager (populated on connect).
+    Component {
+        id: renderNodeField
+        Flow {
+            spacing: 6
+
+            MD.FilterChip {
+                text: "Auto"
+                checked: root.value === ""
+                onClicked: root._emit("")
+            }
+
+            Repeater {
+                model: W.App.gpuManager ? W.App.gpuManager.gpus : []
+                delegate: MD.FilterChip {
+                    required property var modelData
+                    text: (modelData.driver || "drm")
+                        + " " + modelData.renderMajor + ":" + modelData.renderMinor
+                    checked: root.value === modelData.renderNode
+                    enabled: modelData.renderNode.length > 0
+                    onClicked: root._emit(modelData.renderNode)
+                }
+            }
         }
     }
 }

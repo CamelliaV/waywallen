@@ -6,6 +6,7 @@ module;
 module waywallen;
 import :app;
 import :display;
+import :gpu;
 import :renderer;
 import :query;
 import :notify;
@@ -32,6 +33,7 @@ public:
           m_display_mgr(Box<DisplayManager>::make()),
           m_renderer_mgr(Box<RendererManager>::make()),
           m_library_mgr(Box<LibraryManager>::make()),
+          m_gpu_mgr(Box<GpuManager>::make()),
           m_gui_context(Box<QtExecutionContext>::make(
               QThread::currentThread(),
               (QEvent::Type)QEvent::registerEventType())),
@@ -51,6 +53,7 @@ public:
     Box<DisplayManager>        m_display_mgr;
     Box<RendererManager>       m_renderer_mgr;
     Box<LibraryManager>        m_library_mgr;
+    Box<GpuManager>            m_gpu_mgr;
     Box<QtExecutionContext>    m_gui_context;
     asio::thread_pool          m_pool;
     quint16                    m_port;
@@ -139,6 +142,8 @@ void App::init() {
         rq->reload();
         auto* lq = new LibraryListQuery(d->m_library_mgr.get());
         lq->reload();
+        auto* gq = new GpuListQuery(d->m_gpu_mgr.get());
+        gq->reload();
     });
 
     // Eagerly construct the daemon-event mirror. Without this Notify
@@ -185,6 +190,11 @@ auto App::rendererManager() const -> RendererManager* {
 auto App::libraryManager() const -> LibraryManager* {
     Q_D(const App);
     return d->m_library_mgr.as_mut_ptr();
+}
+
+auto App::gpuManager() const -> GpuManager* {
+    Q_D(const App);
+    return d->m_gpu_mgr.as_mut_ptr();
 }
 
 void App::load_settings() {}

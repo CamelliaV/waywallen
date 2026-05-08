@@ -232,12 +232,20 @@ MD.Page {
                                 size: 24
                                 color: modelData.status === "paused" ? MD.Token.color.on_surface_variant : MD.Token.color.primary
                             }
-                            trailing: MD.IconButton {
-                                icon.name: MD.Token.icon.close
-                                onClicked: {
-                                    killDialog.rendererId = modelData.id;
-                                    killDialog.label = root.rendererLabel(modelData);
-                                    killDialog.open();
+                            trailing: RowLayout {
+                                spacing: 6
+                                W.GpuTag {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    drmRenderMajor: modelData.drmRenderMajor || 0
+                                    drmRenderMinor: modelData.drmRenderMinor || 0
+                                }
+                                MD.IconButton {
+                                    icon.name: MD.Token.icon.close
+                                    onClicked: {
+                                        killDialog.rendererId = modelData.id;
+                                        killDialog.label = root.rendererLabel(modelData);
+                                        killDialog.open();
+                                    }
                                 }
                             }
                         }

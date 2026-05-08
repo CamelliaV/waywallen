@@ -65,6 +65,7 @@ set(SOURCES_NO_MOC
   src/app.cpp
   src/daemon_dbus.cpp
   src/display.cpp
+  src/gpu.cpp
   src/library.cpp
   src/notify.cpp
   src/renderer.cpp
@@ -77,6 +78,7 @@ set(SOURCES_NO_MOC
   src/query/source_query.cpp
   src/query/health_query.cpp
   src/query/display_query.cpp
+  src/query/gpu_query.cpp
   src/query/library_query.cpp
   src/query/settings_query.cpp
   src/thumb/service.cpp
@@ -92,6 +94,7 @@ set(MOC_SOURCE_FILES
   src/backend.cppm
   src/daemon_dbus.cppm
   src/display.cppm
+  src/gpu.cppm
   src/library.cppm
   src/notify.cppm
   src/renderer.cppm
@@ -104,6 +107,7 @@ set(MOC_SOURCE_FILES
   src/query/source_query.cppm
   src/query/health_query.cppm
   src/query/display_query.cppm
+  src/query/gpu_query.cppm
   src/query/library_query.cppm
   src/query/settings_query.cppm
   src/thumb/service.cppm
@@ -121,6 +125,7 @@ set(QML_FILES
   qml/Window.qml
   qml/component/StatusDot.qml
   qml/component/PagePopup.qml
+  qml/component/GpuTag.qml
   qml/component/ThumbnailImage.qml
   qml/component/filter/BaseFilter.qml
   qml/component/filter/StringFilter.qml

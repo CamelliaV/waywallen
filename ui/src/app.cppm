@@ -8,6 +8,7 @@ module;
 export module waywallen:app;
 export import :backend;
 export import :display;
+export import :gpu;
 export import :renderer;
 export import :library;
 export import qextra;
@@ -24,6 +25,7 @@ export class App : public QObject {
     Q_PROPERTY(DisplayManager* displayManager READ displayManager CONSTANT FINAL)
     Q_PROPERTY(RendererManager* rendererManager READ rendererManager CONSTANT FINAL)
     Q_PROPERTY(LibraryManager* libraryManager READ libraryManager CONSTANT FINAL)
+    Q_PROPERTY(GpuManager* gpuManager READ gpuManager CONSTANT FINAL)
 
 public:
     App(quint16 port, rstd::empty);
@@ -40,6 +42,7 @@ public:
     auto        displayManager() const -> DisplayManager*;
     auto        rendererManager() const -> RendererManager*;
     auto        libraryManager() const -> LibraryManager*;
+    auto        gpuManager() const -> GpuManager*;
 
     auto        engine() const -> QQmlApplicationEngine*;
     auto        backend() const -> Backend*;

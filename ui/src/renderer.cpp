@@ -28,7 +28,9 @@ Renderer::Renderer(const proto::RendererInstance& info, QObject* parent)
       m_name(info.name()),
       m_pid(info.pid()),
       m_texture_width(info.textureWidth()),
-      m_texture_height(info.textureHeight()) {}
+      m_texture_height(info.textureHeight()),
+      m_drm_render_major(info.drmRenderMajor()),
+      m_drm_render_minor(info.drmRenderMinor()) {}
 
 void Renderer::updateFrom(const proto::RendererInstance& info) {
     rstd_assert(info.rendererId() == m_id, "Renderer::updateFrom id mismatch");

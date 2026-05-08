@@ -199,6 +199,14 @@ MD.Page {
                             typescale: MD.Token.typescale.label_small
                             color: rectItem.hasLink ? MD.Token.color.on_primary_container : MD.Token.color.on_surface_variant
                         }
+
+                        W.GpuTag {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 6
+                            drmRenderMajor: rectItem.d.drmRenderMajor || 0
+                            drmRenderMinor: rectItem.d.drmRenderMinor || 0
+                        }
                     }
                 }
             }

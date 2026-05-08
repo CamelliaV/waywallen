@@ -61,6 +61,10 @@ using proto::LayoutOverride;
 using proto::DisplayLayoutSetRequest;
 using proto::DisplayLayoutSetResponse;
 
+using proto::GpuInfo;
+using proto::GpuListRequest;
+using proto::GpuListResponse;
+
 using proto::LibraryInstance;
 using proto::LibraryListRequest;
 using proto::LibraryListResponse;

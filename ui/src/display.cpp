@@ -71,7 +71,9 @@ Display::Display(const proto::DisplayInfo& info, QObject* parent)
       m_refresh_mhz(info.refreshMhz()),
       m_links(linksFromPb(info)),
       m_effective_layout(effectiveLayoutFromPb(info)),
-      m_layout_override(layoutOverrideFromPb(info)) {}
+      m_layout_override(layoutOverrideFromPb(info)),
+      m_drm_render_major(info.drmRenderMajor()),
+      m_drm_render_minor(info.drmRenderMinor()) {}
 
 void Display::updateFrom(const proto::DisplayInfo& info) {
     rstd_assert(info.displayId() == m_id, "Display::updateFrom id mismatch");
