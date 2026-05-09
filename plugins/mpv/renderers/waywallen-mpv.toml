@@ -12,6 +12,7 @@ name = "waywallen-mpv"
 bin = "../../../bin/waywallen-mpv-renderer"
 types = ["video"]
 priority = 100
+version = "0.1.3"
 spawn_version = 4
 
 [renderer.settings]
