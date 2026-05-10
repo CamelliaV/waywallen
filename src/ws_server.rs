@@ -1042,7 +1042,16 @@ async fn dispatch_inner(
                             to_stop.len(),
                             to_stop,
                         );
-                        state.router.stop_renderers(&to_stop).await;
+                        // Orderly shutdown: tells displays to unbind,
+                        // waits for ack, then graceful Shutdown of the
+                        // producer. See stop_renderers_orderly doc.
+                        state
+                            .router
+                            .stop_renderers_orderly(
+                                &to_stop,
+                                std::time::Duration::from_secs(1),
+                            )
+                            .await;
                     }
                     let new_id = state.renderer_manager.spawn(spawn_req).await?;
                     if let Some(handle) = state.renderer_manager.get(&new_id).await {

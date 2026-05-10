@@ -1082,7 +1082,16 @@ impl RendererManager {
         }
     }
 
-    /// Send Shutdown, then kill + reap the child. Removes from the map.
+    /// Send Shutdown, wait for the child to exit gracefully, escalate
+    /// to SIGKILL only if it doesn't. Removes from the map.
+    ///
+    /// The graceful path is critical for cross-process Vulkan
+    /// correctness: the renderer's exit sequence drains its device
+    /// (`ww_bridge_pool_destroy` calls `ops->wait_idle` before tearing
+    /// slots down), which lets the acquire dma_fence it exported to
+    /// consumers signal cleanly. SIGKILL skips that drain — the kernel
+    /// then force-cancels the dma_fence, and on NVIDIA the consumer's
+    /// pending `vkWaitForFences` returns DEVICE_LOST.
     pub async fn kill(&self, id: &str) -> Result<()> {
         let handle = {
             let mut inner = self.inner.lock().await;
@@ -1090,8 +1099,7 @@ impl RendererManager {
         }
         .ok_or_else(|| Error::RendererNotFound(id.to_string()))?;
 
-        // Try a polite shutdown first. Ignore the result — we're going
-        // to SIGKILL it anyway.
+        // Send Shutdown over the bridge socket.
         let sock = handle.sock.clone();
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(guard) = sock.lock() {
@@ -1102,11 +1110,26 @@ impl RendererManager {
 
         let mut child_guard = handle.child.lock().await;
         if let Some(mut child) = child_guard.take() {
-            let _ = child.start_kill();
-            // Give it a moment to exit cleanly before we move on.
-            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+            // 5 s: comfortably above any plausible vkDeviceWaitIdle
+            // under load (image renderer is microseconds; mpv/wescene
+            // can spike to hundreds of ms during heavy frames).
+            match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+                Ok(_) => {
+                    log::info!("renderer {id}: graceful shutdown");
+                }
+                Err(_) => {
+                    log::warn!(
+                        "renderer {id}: Shutdown timeout (5s), escalating to SIGKILL"
+                    );
+                    let _ = child.start_kill();
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        child.wait(),
+                    )
+                    .await;
+                }
+            }
         }
-        log::info!("killed renderer {id}");
         Ok(())
     }
 }

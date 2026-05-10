@@ -90,9 +90,29 @@ async fn apply_wallpaper_inner(app: &Arc<AppState>, id: &str) -> Result<ApplyRes
     // every pre-existing renderer ends up with zero enabled links. We
     // stop them *before* spawning the new one so peak VRAM stays at
     // one renderer's working set instead of overlapping two.
+    //
+    // Ordering matters for cross-process Vulkan correctness:
+    //   1. Arm unbind-ack tracking on the doomed renderers.
+    //   2. unregister_renderer → emits `Unbind` to bound displays
+    //      (recorded as pending acks under the renderer).
+    //   3. Wait for the displays to send `unbind_done` (with timeout).
+    //      This gives the consumer time to start its render-thread
+    //      drain before the producer's GPU device goes away.
+    //   4. kill the renderer (now-fixed graceful Shutdown path:
+    //      sends Shutdown, waits 5s, escalates to SIGKILL only on
+    //      timeout). The producer's clean exit drains its device
+    //      (via the bridge's wait_idle vfunc), so its acquire
+    //      dma_fence signals normally instead of being kernel-cancelled.
     let to_stop = app.router.renderers_fully_replaced_by(None).await;
     if !to_stop.is_empty() {
-        app.router.stop_renderers(&to_stop).await;
+        // 1 s ack timeout: the consumer's unbind_done is sent
+        // synchronously from handle_unbind after the textures_releasing
+        // callback fires; that callback queues handles to a pending
+        // list and posts an update(). Real-world latency is socket
+        // RTT plus one event-loop tick — well under 1 s.
+        app.router
+            .stop_renderers_orderly(&to_stop, Duration::from_secs(1))
+            .await;
     }
 
     // `width`/`height` of `0` are legal — they tell the renderer to

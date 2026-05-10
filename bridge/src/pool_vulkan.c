@@ -561,6 +561,14 @@ static int populate_slot_view(ww_pool_t *pool, uint32_t slot_index,
     return 0;
 }
 
+static void backend_wait_idle(ww_pool_t *pool) {
+    vk_state_t *st = (vk_state_t *)pool->backend_data;
+    if (!st) return;
+    if (st->vkDeviceWaitIdle && st->device) {
+        st->vkDeviceWaitIdle(st->device);
+    }
+}
+
 static void backend_destroy(ww_pool_t *pool) {
     vk_state_t *st = (vk_state_t *)pool->backend_data;
     if (!st) return;
@@ -687,6 +695,7 @@ static const struct ww_pool_backend_ops kVulkanOps = {
     .alloc_slot         = alloc_slot,
     .free_slot          = free_slot,
     .populate_slot_view = populate_slot_view,
+    .wait_idle          = backend_wait_idle,
     .destroy            = backend_destroy,
 };
 

@@ -142,6 +142,24 @@ struct ww_pool_backend_ops {
     int  (*populate_slot_view)(ww_pool_t *pool, uint32_t slot_index,
                                ww_pool_slot_t *out_slot);
 
+    /* Drain GPU work referencing any allocated slot. Called from
+     * ww_bridge_pool_destroy before per-slot teardown so that
+     * vkDestroyImage / glDeleteTextures don't run while the device
+     * still has the resources in flight (which would either be
+     * undefined behaviour or, on producer-process death, leave the
+     * exported acquire dma_fence in a force-cancelled state and
+     * propagate device-loss to the consumer).
+     *
+     * Vulkan: vkDeviceWaitIdle. EGL/GBM: glFinish (after eglMakeCurrent
+     * with the backend's saved context, since the calling thread may
+     * have been the bridge reader thread which has no GL context).
+     * MUST be safe to call when no slots have been allocated and on
+     * any thread.
+     *
+     * Optional — older or simpler backends may leave this NULL; pool.c
+     * skips the call. */
+    void (*wait_idle)(ww_pool_t *pool);
+
     /* Backend-specific teardown. pool.c destroys the drm_syncobj,
      * closes drm_fd, frees caps.entries and slots[].dmabuf_fd; the
      * backend frees its own state including any GBM device or

@@ -304,6 +304,15 @@ int ww_bridge_pool_create(ww_pool_backend_t backend,
 
 void ww_bridge_pool_destroy(ww_pool_t *pool) {
     if (!pool) return;
+    /* Drain in-flight GPU work referencing any slot before tearing it
+     * down. Without this, vkDestroyImage / glDeleteTextures may run on
+     * still-busy resources, and any acquire dma_fence the producer has
+     * exported (and the consumer is waiting on) gets force-cancelled by
+     * the kernel, which on NVIDIA propagates as VK_ERROR_DEVICE_LOST on
+     * the consumer side. */
+    if (pool->ops && pool->ops->wait_idle) {
+        pool->ops->wait_idle(pool);
+    }
     teardown_slots(pool);
     if (pool->ops && pool->ops->destroy) {
         pool->ops->destroy(pool);

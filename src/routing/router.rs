@@ -20,7 +20,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{broadcast, broadcast::error::RecvError, mpsc, Mutex as TokioMutex};
+use std::collections::HashSet;
+
+use tokio::sync::{broadcast, broadcast::error::RecvError, mpsc, Mutex as TokioMutex, Notify};
 use tokio::task::JoinHandle;
 
 /// Backstop only. The mainline path is `Router::mark_orphan`, which
@@ -246,6 +248,17 @@ struct Inner {
     /// itself also clears its own entry once it commits to the kill
     /// path so a re-mark after wake-up reschedules cleanly.
     orphan_timers: HashMap<RendererId, JoinHandle<()>>,
+    /// Per-renderer set of (display_id, buffer_generation) pairs we've
+    /// emitted `Unbind` for and are waiting for the display's
+    /// `unbind_done` ack on. Populated by `begin_unbind_ack_tracking`
+    /// before the unregister/sync_display path runs (so the Unbind
+    /// emission inside sync_display can record the pending pair),
+    /// drained by `record_unbind_done` as acks arrive, and removed
+    /// entirely by `await_unbind_acks_for` when the wait completes
+    /// (success or timeout). Renderers not currently being torn down
+    /// have no entry — keeping it sparse avoids leaks across normal
+    /// link reshuffles.
+    unbind_acks_pending: HashMap<RendererId, HashSet<(DisplayId, u64)>>,
     next_display_id: u64,
     next_config_generation: u64,
 }
@@ -263,6 +276,12 @@ pub struct Router {
     /// [`Router::attach_settings`]; tests omit it and fall back to
     /// `LayoutDefaults::default()` (Stretched + Center, identity).
     settings: std::sync::OnceLock<Arc<SettingsStore>>,
+    /// Wakes any task currently inside `await_unbind_acks_for` whenever
+    /// `record_unbind_done` mutates `unbind_acks_pending`. Single
+    /// router-wide notifier — waiters re-check the pending set after
+    /// each wake. Permits are reset before each wait so we never wake
+    /// on a stale notification from a previous round.
+    unbind_ack_notify: Notify,
 }
 
 impl Router {
@@ -284,12 +303,14 @@ impl Router {
                 paused_renderers: std::collections::HashSet::new(),
                 paused_since: HashMap::new(),
                 orphan_timers: HashMap::new(),
+                unbind_acks_pending: HashMap::new(),
                 next_display_id: 0,
                 next_config_generation: 0,
             }),
             mgr,
             events_tx,
             settings: std::sync::OnceLock::new(),
+            unbind_ack_notify: Notify::new(),
         });
         // Spawn the idle-renderer reaper.
         {
@@ -601,6 +622,89 @@ impl Router {
             let all = self.snapshot_displays().await;
             self.emit(RouterEvent::DisplaysReplace(all));
         }
+    }
+
+    /// Arm `unbind_done` ack tracking for `renderer_id`. MUST be called
+    /// before any `sync_display` that emits an `Unbind` for a display
+    /// currently bound to this renderer — typically right before
+    /// `unregister_renderer` in the wallpaper-switch teardown path.
+    /// After this, the next `Unbind` emissions for this renderer
+    /// populate the pending-ack set; `await_unbind_acks_for` then
+    /// blocks until the displays send `unbind_done` (or timeout).
+    ///
+    /// Idempotent: re-arming an already-tracked renderer is a no-op
+    /// (existing pending entries are preserved).
+    pub async fn begin_unbind_ack_tracking(self: &Arc<Self>, renderer_id: &str) {
+        let mut inner = self.inner.lock().await;
+        inner
+            .unbind_acks_pending
+            .entry(renderer_id.to_string())
+            .or_insert_with(HashSet::new);
+    }
+
+    /// Record an `unbind_done` request from a display for a specific
+    /// generation. Drains any matching `(display_id, generation)` pair
+    /// from each tracked renderer's pending set and wakes
+    /// `await_unbind_acks_for`. Cheap when no tracking is active.
+    pub async fn record_unbind_done(
+        self: &Arc<Self>,
+        display_id: DisplayId,
+        buffer_generation: u64,
+    ) {
+        {
+            let mut inner = self.inner.lock().await;
+            for pending in inner.unbind_acks_pending.values_mut() {
+                pending.remove(&(display_id, buffer_generation));
+            }
+        }
+        self.unbind_ack_notify.notify_waiters();
+    }
+
+    /// Wait for every (display, generation) pair recorded under
+    /// `renderer_id` to be acked, or for `timeout` to elapse. Returns
+    /// `Ok(())` on full ack, `Err(elapsed)` on timeout. Removes the
+    /// renderer's entry from the tracking map either way so a follow-
+    /// up call doesn't see stale state.
+    pub async fn await_unbind_acks_for(
+        self: &Arc<Self>,
+        renderer_id: &str,
+        timeout: Duration,
+    ) -> Result<(), tokio::time::error::Elapsed> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let result = tokio::time::timeout_at(deadline, async {
+            loop {
+                // Acquire a notified-future BEFORE the pending-set
+                // check so a concurrent `record_unbind_done` between
+                // check and wait still wakes us.
+                let notified = self.unbind_ack_notify.notified();
+                tokio::pin!(notified);
+                {
+                    let inner = self.inner.lock().await;
+                    match inner.unbind_acks_pending.get(renderer_id) {
+                        None => return,
+                        Some(set) if set.is_empty() => return,
+                        _ => {}
+                    }
+                }
+                notified.await;
+            }
+        })
+        .await;
+
+        // Clean up: drop the tracking entry whether we succeeded or
+        // timed out. Leaving it would silently delay any subsequent
+        // tracking arm for the same renderer id.
+        let mut inner = self.inner.lock().await;
+        if let Some(remaining) = inner.unbind_acks_pending.remove(renderer_id) {
+            if !remaining.is_empty() {
+                log::warn!(
+                    "router: await_unbind_acks_for({renderer_id}) cleared {} \
+                     un-acked entries (timeout or shutdown)",
+                    remaining.len()
+                );
+            }
+        }
+        result
     }
 
     // ---------------------------------------------------------------
@@ -1189,6 +1293,44 @@ impl Router {
         }
     }
 
+    /// Stop the listed renderers with the wallpaper-switch shutdown
+    /// handshake: arm unbind-ack tracking, unregister (which emits
+    /// `Unbind` to bound displays), wait for `unbind_done` acks with
+    /// `ack_timeout`, then graceful Shutdown via `RendererManager::kill`.
+    /// Used by every "we're replacing this renderer with a new one"
+    /// path (apply_wallpaper, ws_server's WallpaperApply). On daemon
+    /// shutdown / cleanup paths the simpler `stop_renderers` is fine
+    /// because there's no consumer left to race against.
+    pub async fn stop_renderers_orderly(
+        self: &Arc<Self>,
+        ids: &[RendererId],
+        ack_timeout: Duration,
+    ) {
+        for id in ids {
+            self.begin_unbind_ack_tracking(id).await;
+        }
+        for id in ids {
+            self.unregister_renderer(id).await;
+        }
+        for id in ids {
+            if self
+                .await_unbind_acks_for(id, ack_timeout)
+                .await
+                .is_err()
+            {
+                log::warn!(
+                    "router: stop_renderers_orderly: unbind_done ack timeout \
+                     for renderer {id}; proceeding with kill anyway"
+                );
+            }
+        }
+        for id in ids {
+            if let Err(e) = self.mgr.kill(id).await {
+                log::warn!("router: stop_renderers_orderly: kill {id}: {e}");
+            }
+        }
+    }
+
     /// Re-point every enabled link to `new_renderer_id`. Used by
     /// `WallpaperApply` in single-wallpaper mode. Idempotent: calling
     /// twice with the same id is a no-op (the link already points
@@ -1659,6 +1801,18 @@ impl Router {
             let _ = s.tx.send(DisplayOutEvent::Unbind {
                 buffer_generation: og,
             });
+            // If the OLD renderer is currently being torn down with
+            // ack tracking active (set up by `begin_unbind_ack_tracking`
+            // in the apply_wallpaper switch path), record this
+            // (display, gen) pair so the daemon can wait for the
+            // display's `unbind_done` ack before issuing Shutdown.
+            // Renderers without an entry — i.e. all normal reshuffles
+            // — fall through with no overhead.
+            if let Some(old_r) = last_renderer.as_ref() {
+                if let Some(pending) = inner.unbind_acks_pending.get_mut(old_r) {
+                    pending.insert((display_id, og));
+                }
+            }
         }
 
         // Phase B: bind the new pool (if any).

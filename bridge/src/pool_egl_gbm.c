@@ -66,6 +66,7 @@ typedef void (*ww_pfn_glFramebufferTexture2D)(unsigned int target,
                                               unsigned int texture, int level);
 typedef unsigned int (*ww_pfn_glCheckFramebufferStatus)(unsigned int target);
 typedef void (*ww_pfn_glFlush)(void);
+typedef void (*ww_pfn_glFinish)(void);
 typedef void (*ww_pfn_glEGLImageTargetTexture2DOES)(unsigned int target,
                                                    void *image);
 
@@ -88,6 +89,7 @@ typedef struct egl_gbm_state {
     ww_pfn_glFramebufferTexture2D    glFramebufferTexture2D;
     ww_pfn_glCheckFramebufferStatus  glCheckFramebufferStatus;
     ww_pfn_glFlush                   glFlush;
+    ww_pfn_glFinish                  glFinish;
     ww_pfn_glEGLImageTargetTexture2DOES glEGLImageTargetTexture2DOES;
 
     /* Per-slot GL/EGL handles, keyed by slot index. */
@@ -131,6 +133,7 @@ static int load_gl_dispatch(egl_gbm_state_t *st,
     st->glFramebufferTexture2D   = (ww_pfn_glFramebufferTexture2D)   (void *)get_proc("glFramebufferTexture2D");
     st->glCheckFramebufferStatus = (ww_pfn_glCheckFramebufferStatus) (void *)get_proc("glCheckFramebufferStatus");
     st->glFlush                  = (ww_pfn_glFlush)                  (void *)get_proc("glFlush");
+    st->glFinish                 = (ww_pfn_glFinish)                 (void *)get_proc("glFinish");
     st->glEGLImageTargetTexture2DOES =
         (ww_pfn_glEGLImageTargetTexture2DOES)(void *)get_proc("glEGLImageTargetTexture2DOES");
 #pragma GCC diagnostic pop
@@ -139,7 +142,7 @@ static int load_gl_dispatch(egl_gbm_state_t *st,
         !st->glTexParameteri || !st->glGetError || !st->glGenFramebuffers ||
         !st->glDeleteFramebuffers || !st->glBindFramebuffer ||
         !st->glFramebufferTexture2D || !st->glCheckFramebufferStatus ||
-        !st->glFlush || !st->glEGLImageTargetTexture2DOES) {
+        !st->glFlush || !st->glFinish || !st->glEGLImageTargetTexture2DOES) {
         return -ENOSYS;
     }
     return 0;
@@ -538,6 +541,18 @@ static int populate_slot_view(ww_pool_t *pool, uint32_t slot_index,
     return 0;
 }
 
+static void backend_wait_idle(ww_pool_t *pool) {
+    egl_gbm_state_t *st = (egl_gbm_state_t *)pool->backend_data;
+    if (!st) return;
+    /* Caller must hold the GL context current — the bridge already
+     * relies on this for glDeleteTextures / glDeleteFramebuffers in
+     * free_slot, so no makeCurrent dance here. glFinish blocks until
+     * all submitted GL work has completed. */
+    if (st->glFinish) {
+        st->glFinish();
+    }
+}
+
 static void backend_destroy(ww_pool_t *pool) {
     egl_gbm_state_t *st = (egl_gbm_state_t *)pool->backend_data;
     if (!st) return;
@@ -604,6 +619,7 @@ static const struct ww_pool_backend_ops kEglGbmOps = {
     .alloc_slot         = alloc_slot,
     .free_slot          = free_slot,
     .populate_slot_view = populate_slot_view,
+    .wait_idle          = backend_wait_idle,
     .destroy            = backend_destroy,
 };
 

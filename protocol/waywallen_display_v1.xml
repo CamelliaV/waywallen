@@ -105,13 +105,27 @@
       array that decode now fails on; daemon rejects them via
       hello.client_protocol_version range check.
 
+  v6 (unbind ack):
+    - New request `unbind_done` (opcode 11): display→daemon ack that
+      an `unbind` event was received and host-side teardown has been
+      initiated. The daemon waits for this (with a short timeout)
+      before issuing `Shutdown` to the producer that owned the
+      unbound pool, so the producer's exported acquire dma_fence
+      doesn't get force-cancelled mid-blit by the consumer.
+    - Wire-compatible with v5 except for the new request — v5 clients
+      that never send `unbind_done` still work (daemon falls back to
+      the timeout). v6 clients on a v5 daemon would just have their
+      `unbind_done` silently ignored as an unknown opcode if the
+      daemon's range allowed v6 (it won't — daemon only accepts ≥6
+      once it advertises v6).
+
   Informational features (welcome.features, advisory only in v3+):
     "explicit_sync_fd"           — acquire fence as dma_fence sync_file.
     "drm_syncobj_release"        — release fence as drm_syncobj fd.
     "modifier_negotiation_v1"    — consumer_caps + bind_failed plumbing.
   Optional features (reserved): "color_management", "hdr"
 -->
-<protocol name="waywallen_display" version="5">
+<protocol name="waywallen_display" version="6">
 
   <!-- ==================================================================
        REQUESTS  (display -> manager)
@@ -314,6 +328,28 @@
     <arg name="source" type="u32"/>
     <arg name="timestamp_us" type="u64"/>
     <arg name="modifiers" type="u32"/>
+  </request>
+
+  <!--
+    Acknowledge that an `unbind` event with `buffer_generation` was
+    received and host-side teardown has been initiated (the on_textures
+    _releasing callback fired and the consumer's pending-pool list
+    captured the released imports). The acknowledgement does NOT
+    promise that the consumer's GPU has actually finished sampling —
+    that's a separate guarantee provided by the kernel/driver once the
+    producer's acquire dma_fence signals.
+
+    The manager waits for this ack with a short timeout before issuing
+    `Shutdown` to the producer that owned the pool, so the producer's
+    in-flight GPU work isn't force-cancelled while the consumer is
+    still blitting from it.
+
+    Fire-and-forget on the display side: send and move on. If the
+    socket dies before this is sent, the daemon's connection-close
+    handler treats EOF as an implicit ack for any pending unbinds.
+  -->
+  <request name="unbind_done" opcode="11">
+    <arg name="buffer_generation" type="u64"/>
   </request>
 
 

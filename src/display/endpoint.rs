@@ -427,6 +427,12 @@ async fn run_frame_loop(
                     log::info!("display {display_id}: bye");
                     break Ok(());
                 }
+                Some(Ok(Request::UnbindDone { buffer_generation })) => {
+                    log::debug!(
+                        "display {display_id}: unbind_done gen={buffer_generation}"
+                    );
+                    router.record_unbind_done(display_id, buffer_generation).await;
+                }
                 Some(Ok(Request::PointerMotion { x, y, timestamp_us, modifiers })) => {
                     if let (Some(r), Some(cfg)) = (bound_renderer.as_ref(), latest_config.as_ref()) {
                         if let Some((tx, ty)) = display_point_to_texture(x, y, cfg) {
