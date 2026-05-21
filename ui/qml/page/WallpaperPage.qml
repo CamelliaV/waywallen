@@ -63,11 +63,16 @@ MD.Page {
     W.SettingsGetQuery {
         id: filterSettingsGet
         onGlobalChanged: {
+            // Restore sort first so the filter pipeline below doesn't
+            // dispatch a list reload with the stale sort: doQuery may
+            // route through wallpaperQuery.reload() synchronously when
+            // filter state already matches, and m_sorts must already
+            // be the persisted value at that point.
+            root.restoreSortFromSettings(global.wallpaperSorts || []);
             wallpaperFilterModel.replaceState(
                         global.wallpaperFilters || [],
                         global.wallpaperFilterLogics || []);
             wallpaperFilterModel.doQuery();
-            root.restoreSortFromSettings(global.wallpaperSorts || []);
         }
     }
 
@@ -100,12 +105,10 @@ MD.Page {
 
         onApply: {
             doQuery();
-            const nextGlobal = Object.assign({}, filterSettingsGet.global);
-            nextGlobal.wallpaperFilters = items();
-            nextGlobal.wallpaperFilterLogics = filterLogics;
-            filterSettingsSet.global = nextGlobal;
-            filterSettingsSet.plugins = filterSettingsGet.plugins;
-            filterSettingsSet.reload();
+            root._persistGlobalChange(g => {
+                g.wallpaperFilters = items();
+                g.wallpaperFilterLogics = filterLogics;
+            });
         }
 
         onReset: {
@@ -149,6 +152,20 @@ MD.Page {
     function applySort() {
         wallpaperQuery.sorts = [_buildSortRule()];
     }
+    // Guard: don't overwrite daemon state with proto defaults when the
+    // local mirror of settings hasn't been populated yet. Without this,
+    // a click that lands before filterSettingsGet's first response
+    // ships a SettingsSet with only the touched field; the daemon then
+    // resets target_extent to 0 and clears the filter on commit.
+    function _persistGlobalChange(mutator) {
+        if (Object.keys(filterSettingsGet.global).length === 0)
+            return;
+        const nextGlobal = Object.assign({}, filterSettingsGet.global);
+        mutator(nextGlobal);
+        filterSettingsSet.global = nextGlobal;
+        filterSettingsSet.plugins = filterSettingsGet.plugins;
+        filterSettingsSet.reload();
+    }
     function pickSort(idx) {
         if (idx === sortIndex) {
             sortAsc = !sortAsc;
@@ -157,14 +174,7 @@ MD.Page {
             sortAsc = true;
         }
         applySort();
-        // Persist the new pick. Daemon broadcasts SettingsChanged after
-        // commit; the round-trip is harmless because restoreSortFromSettings
-        // is a no-op when state already matches.
-        const nextGlobal = Object.assign({}, filterSettingsGet.global);
-        nextGlobal.wallpaperSorts = [_buildSortRule()];
-        filterSettingsSet.global = nextGlobal;
-        filterSettingsSet.plugins = filterSettingsGet.plugins;
-        filterSettingsSet.reload();
+        _persistGlobalChange(g => { g.wallpaperSorts = [_buildSortRule()]; });
     }
     function restoreSortFromSettings(rules) {
         if (!rules || rules.length === 0) {
