@@ -52,6 +52,16 @@ MD.Page {
         id: applyQuery
     }
 
+    // Detail panel uses this to fetch the freshest view (tags + media
+    // meta) for the currently-selected entry. Reload is auto-triggered
+    // when wallpaperId changes.
+    W.WallpaperGetQuery {
+        id: wallpaperGetQuery
+        // `id` is a QML keyword, so qtprotobuf renames `WallpaperEntry.id`
+        // to `id_proto`. Using `.id` here would always read undefined.
+        wallpaperId: root.selectedWallpaper?.id_proto ?? ""
+    }
+
     W.RendererPluginListQuery {
         id: pluginQuery
     }
@@ -604,6 +614,22 @@ MD.Page {
                                 text: (root.selectedWallpaper?.format ?? "").toLowerCase()
                                 typescale: MD.Token.typescale.body_medium
                                 color: MD.Token.color.on_surface
+                            }
+                        }
+
+                        // Tags. Sourced from the per-item query
+                        // (wallpaperGetQuery) so the panel reflects DB
+                        // edits even if the list page is stale.
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            visible: (wallpaperGetQuery.wallpaper?.tags?.length ?? 0) > 0
+                            Repeater {
+                                model: wallpaperGetQuery.wallpaper?.tags ?? []
+                                delegate: MD.AssistChip {
+                                    required property string modelData
+                                    text: modelData
+                                }
                             }
                         }
 

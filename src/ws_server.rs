@@ -839,21 +839,68 @@ async fn dispatch_inner(
                 ((r.page as usize) * page_size, page_size)
             };
 
-            let entries: Vec<pb::WallpaperEntry> = filtered_entries
+            let page_entries: Vec<&crate::wallpaper_type::WallpaperEntry> = filtered_entries
                 .into_iter()
                 .skip(offset)
                 .take(take)
+                .collect();
+
+            // Batch-load tags for just the items on this page (avoid
+            // an N+1 round-trip when paginating large libraries).
+            let page_item_ids: Vec<i64> = page_entries
+                .iter()
+                .filter_map(|e| {
+                    let rel =
+                        crate::model::sync::relative_under_root(&e.library_root, &e.resource)?;
+                    db_meta_map.get(&(e.library_root.clone(), rel)).map(|m| m.id)
+                })
+                .collect();
+            let tag_map = repo::list_tags_for_items(&state.db, &page_item_ids).await?;
+
+            let entries: Vec<pb::WallpaperEntry> = page_entries
+                .into_iter()
                 .map(|e| {
                     let db_meta =
                         crate::model::sync::relative_under_root(&e.library_root, &e.resource)
                             .and_then(|rel| db_meta_map.get(&(e.library_root.clone(), rel)));
-                    entry_to_pb(e, db_meta)
+                    let tags = db_meta
+                        .and_then(|m| tag_map.get(&m.id))
+                        .cloned()
+                        .unwrap_or_default();
+                    entry_to_pb(e, db_meta, tags)
                 })
                 .collect();
 
             Res::WallpaperList(pb::WallpaperListResponse {
                 wallpapers: entries,
                 count: total,
+            })
+        }
+
+        Req::WallpaperGet(r) => {
+            let snap = state.source_snapshot.read().await;
+            let entry = snap
+                .get(&r.wallpaper_id)
+                .ok_or_else(|| Error::WallpaperNotFound(r.wallpaper_id.clone()))?;
+
+            let rel = crate::model::sync::relative_under_root(&entry.library_root, &entry.resource);
+            let db_meta = if let Some(rel) = rel {
+                repo::find_item_by_library_path(&state.db, &entry.library_root, &rel).await?
+            } else {
+                None
+            };
+            let tags = if let Some(m) = db_meta.as_ref() {
+                repo::list_tags_of_item(&state.db, m.id)
+                    .await?
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            Res::WallpaperGet(pb::WallpaperGetResponse {
+                entry: Some(entry_to_pb(&entry, db_meta.as_ref(), tags)),
             })
         }
 
@@ -1511,6 +1558,7 @@ pub fn wrap_event(evt: pb::Event) -> pb::ServerFrame {
 fn entry_to_pb(
     e: &crate::wallpaper_type::WallpaperEntry,
     db_meta: Option<&crate::model::entities::item::Model>,
+    tags: Vec<String>,
 ) -> pb::WallpaperEntry {
     // Prefer DB values (freshest, written by the probe task); fall back to
     // what the Lua plugin may have pre-filled on the in-memory entry.
@@ -1551,6 +1599,7 @@ fn entry_to_pb(
         width,
         height,
         content_rating,
+        tags,
     }
 }
 

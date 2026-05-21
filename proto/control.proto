@@ -59,6 +59,7 @@ message Request {
     PlaylistStatusRequest     playlist_status = 39;
     DisplayLayoutSetRequest   display_layout_set = 40;
     GpuListRequest            gpu_list = 41;
+    WallpaperGetRequest       wallpaper_get = 42;
   }
 }
 
@@ -105,6 +106,7 @@ message Response {
     PlaylistStatusResponse     playlist_status = 39;
     DisplayLayoutSetResponse   display_layout_set = 40;
     GpuListResponse            gpu_list = 41;
+    WallpaperGetResponse       wallpaper_get = 42;
   }
 }
 
@@ -288,6 +290,10 @@ message WallpaperEntry {
   uint32 width = 8;
   uint32 height = 9;
   string content_rating = 10;
+  // Tags pulled from the DB at response time. Empty if the entry has
+  // no matching DB row or no tags. WallpaperList batch-loads this; the
+  // single-item WallpaperGet returns the freshest view.
+  repeated string tags = 11;
 }
 
 message WallpaperListRequest {
@@ -306,6 +312,16 @@ message WallpaperListResponse {
   // Total number of entries matching wp_type, ignoring offset/limit. Allows the
   // client to know when it has fetched the last page.
   uint32 count = 2;
+}
+
+// Fetch the freshest view of a single wallpaper (snapshot entry +
+// DB media-meta + tags). Used by the UI's detail panel so it can
+// show data that may have been written after the initial list page.
+message WallpaperGetRequest {
+  string wallpaper_id = 1;
+}
+message WallpaperGetResponse {
+  WallpaperEntry entry = 1;
 }
 
 message WallpaperScanRequest {}

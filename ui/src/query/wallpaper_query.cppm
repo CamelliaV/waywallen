@@ -85,6 +85,33 @@ private:
     quint32 m_count { 0 };
 };
 
+export class WallpaperGetQuery : public Query, public QueryExtra<control::v1::Response, WallpaperGetQuery> {
+    Q_OBJECT
+    QML_ELEMENT
+
+    /// Source id; setting this triggers a reload. Empty = no-op.
+    Q_PROPERTY(QString wallpaperId READ wallpaperId WRITE setWallpaperId NOTIFY wallpaperIdChanged FINAL)
+    /// Latest server-side view (entry + DB media-meta + tags). Read-only.
+    Q_PROPERTY(waywallen::model::Wallpaper wallpaper READ wallpaper NOTIFY wallpaperChanged FINAL)
+
+public:
+    WallpaperGetQuery(QObject* parent = nullptr);
+
+    auto wallpaperId() const -> const QString&;
+    void setWallpaperId(const QString&);
+
+    auto wallpaper() const -> const model::Wallpaper&;
+
+    void reload() override;
+
+    Q_SIGNAL void wallpaperIdChanged();
+    Q_SIGNAL void wallpaperChanged();
+
+private:
+    QString          m_wallpaper_id;
+    model::Wallpaper m_wallpaper;
+};
+
 export class WallpaperApplyQuery : public Query, public QueryExtra<control::v1::Response, WallpaperApplyQuery> {
     Q_OBJECT
     QML_ELEMENT

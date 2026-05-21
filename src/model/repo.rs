@@ -833,6 +833,32 @@ pub async fn list_tags_of_item(db: &DatabaseConnection, item_id: i64) -> Result<
         .with_context(|| format!("select tags of item={item_id}"))
 }
 
+/// Batch variant of `list_tags_of_item`: one round-trip resolving the
+/// tag set for every requested item, grouped by item id. Items without
+/// any tag simply do not appear in the map.
+pub async fn list_tags_for_items(
+    db: &DatabaseConnection,
+    item_ids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>> {
+    if item_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(item_tag::Model, Option<tag::Model>)> = item_tag::Entity::find()
+        .find_also_related(tag::Entity)
+        .filter(item_tag::Column::ItemId.is_in(item_ids.iter().copied()))
+        .order_by_asc(tag::Column::Name)
+        .all(db)
+        .await
+        .context("select tags for items")?;
+    let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+    for (it, t) in rows {
+        if let Some(t) = t {
+            out.entry(it.item_id).or_default().push(t.name);
+        }
+    }
+    Ok(out)
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -215,6 +215,48 @@ void WallpaperScanQuery::reload() {
 }
 
 // ---------------------------------------------------------------------------
+// WallpaperGetQuery
+// ---------------------------------------------------------------------------
+
+WallpaperGetQuery::WallpaperGetQuery(QObject* parent): Query(parent) {
+    connect_requet_reload(&WallpaperGetQuery::wallpaperIdChanged, this);
+}
+
+auto WallpaperGetQuery::wallpaperId() const -> const QString& { return m_wallpaper_id; }
+void WallpaperGetQuery::setWallpaperId(const QString& v) {
+    if (m_wallpaper_id != v) {
+        m_wallpaper_id = v;
+        Q_EMIT wallpaperIdChanged();
+    }
+}
+
+auto WallpaperGetQuery::wallpaper() const -> const model::Wallpaper& { return m_wallpaper; }
+
+void WallpaperGetQuery::reload() {
+    if (m_wallpaper_id.isEmpty()) return;
+    setStatus(Status::Querying);
+    auto backend = App::instance()->backend();
+
+    auto req   = proto::Request {};
+    auto inner = proto::WallpaperGetRequest {};
+    inner.setWallpaperId(m_wallpaper_id);
+    req.setWallpaperGet(std::move(inner));
+
+    auto self = QWatcher { this };
+    spawn([self, backend, req = std::move(req)]() mutable -> task<void> {
+        auto result = co_await backend->send(std::move(req));
+        co_await asio::post(asio::bind_executor(self->get_executor(), use_task));
+        if (! self) co_return;
+
+        self->inspect_set(result, [self](const proto::Response& rsp) {
+            self->m_wallpaper = rsp.wallpaperGet().entry();
+            Q_EMIT self->wallpaperChanged();
+        });
+        co_return;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // WallpaperApplyQuery
 // ---------------------------------------------------------------------------
 
