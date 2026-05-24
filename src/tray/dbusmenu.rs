@@ -4,6 +4,7 @@
 //! `u(ia{sv}av)` where each `av` element is a `v<(ia{sv}av)>`).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use zbus::{interface, zvariant};
@@ -11,6 +12,20 @@ use zvariant::{OwnedValue, StructureBuilder, Value};
 
 use crate::control;
 use crate::AppState;
+
+/// Monotonically-increasing revision used in `GetLayout` replies and
+/// `LayoutUpdated` signals. KDE Plasma dedupes signal-driven re-fetches
+/// against the last-seen revision; sending the same value twice makes
+/// the menu look frozen after the user toggles a radio / checkmark.
+static LAYOUT_REVISION: AtomicU32 = AtomicU32::new(1);
+
+fn bump_revision() -> u32 {
+    LAYOUT_REVISION.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+fn current_revision() -> u32 {
+    LAYOUT_REVISION.load(Ordering::Relaxed)
+}
 
 const ID_ROOT: i32 = 0;
 const ID_OPEN_UI: i32 = 1;
@@ -92,7 +107,7 @@ impl DBusMenu {
         _recursion_depth: i32,
         _property_names: Vec<String>,
     ) -> zbus::fdo::Result<(u32, ItemStruct)> {
-        let revision = 1;
+        let revision = current_revision();
         let menu = snapshot_menu_state(&self.app).await;
         if parent_id == ID_ROOT {
             Ok((revision, build_root(&menu)))
@@ -270,7 +285,7 @@ async fn snapshot_menu_state(app: &Arc<AppState>) -> MenuState {
 /// Rotate submenu visually stack — KDE only re-fetches on menu
 /// re-open, so a single click while the menu is open looks
 /// multi-select.
-pub async fn notify_menu_changed(app: &AppState) {
+pub async fn notify_menu_changed(app: &Arc<AppState>) {
     let conn = match app.dbus_conn.lock().unwrap().clone() {
         Some(c) => c,
         None => return,
@@ -283,10 +298,44 @@ pub async fn notify_menu_changed(app: &AppState) {
         Ok(i) => i,
         Err(_) => return,
     };
-    // Bump the layout revision; parent = ID_ROOT means "everything below
-    // root may have changed". KDE responds with a single GetLayout
-    // round-trip that walks the whole tree.
-    let _ = DBusMenu::layout_updated(iface.signal_context(), 1, ID_ROOT).await;
+
+    // Push the new toggle-state for every radio / checkmark that this
+    // event might have flipped. Sending only LayoutUpdated isn't
+    // enough: KDE Plasma updates the radio dot from
+    // `ItemsPropertiesUpdated`, not from a layout re-fetch, so without
+    // this the previously-selected leaf keeps its dot.
+    let menu = snapshot_menu_state(app).await;
+    let mut updates: Vec<(i32, HashMap<String, OwnedValue>)> = Vec::new();
+    {
+        let mut p: HashMap<String, OwnedValue> = HashMap::new();
+        p.insert(
+            "toggle-state".into(),
+            OwnedValue::try_from(Value::from(if menu.is_shuffle { 1i32 } else { 0i32 })).unwrap(),
+        );
+        updates.push((ID_SHUFFLE, p));
+    }
+    for (id, _label, secs) in rotate_options().iter().copied() {
+        let mut p: HashMap<String, OwnedValue> = HashMap::new();
+        p.insert(
+            "toggle-state".into(),
+            OwnedValue::try_from(Value::from(if menu.rotation_secs == secs {
+                1i32
+            } else {
+                0i32
+            }))
+            .unwrap(),
+        );
+        updates.push((id, p));
+    }
+    let _ =
+        DBusMenu::items_properties_updated(iface.signal_context(), updates, Vec::new()).await;
+
+    // Bump the revision + emit LayoutUpdated as a fallback for hosts
+    // that don't honor ItemsPropertiesUpdated. The revision must
+    // monotonically increase — otherwise KDE dedupes the GetLayout
+    // re-fetch and the previous radio dot lingers.
+    let rev = bump_revision();
+    let _ = DBusMenu::layout_updated(iface.signal_context(), rev, ID_ROOT).await;
 }
 
 // ---------------------------------------------------------------------------
