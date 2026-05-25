@@ -18,7 +18,9 @@ use wayland_client::protocol::{
     wl_callback::{self, WlCallback},
     wl_compositor::WlCompositor,
     wl_output::{self, Transform, WlOutput},
+    wl_pointer::{self, ButtonState, WlPointer},
     wl_registry::WlRegistry,
+    wl_seat::{self, WlSeat},
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
@@ -272,6 +274,32 @@ struct App {
     /// compositor's actual modifier set into `consumer_caps` instead
     /// of a hardcoded LINEAR-only fallback.
     dmabuf_caps: Arc<Mutex<BTreeMap<u32, BTreeSet<u64>>>>,
+    /// One `wl_pointer` per `wl_seat`, lazily allocated on the seat's
+    /// `capabilities` event when it advertises the Pointer cap. Key is
+    /// the `wl_seat` global name; value is the current pointer +
+    /// per-pointer focus state. Compositor may add/remove the cap
+    /// dynamically — we mirror those transitions.
+    pointers: HashMap<u32, PointerCtx>,
+}
+
+/// Per-seat pointer focus state. We track which output (`wl_surface`)
+/// the pointer is over so we can forward `pointer_motion`/`button`/
+/// `axis` to the right output's UDS binding, and the latest surface
+/// coords so button/axis events (which don't carry coords) report a
+/// position consistent with the last motion.
+struct PointerCtx {
+    pointer: WlPointer,
+    /// Owning `wl_output` global name of the surface the pointer is
+    /// currently inside, set from `Enter`'s surface user-data.
+    focus_output: Option<u32>,
+    /// Logical surface coords from the most recent `Enter`/`Motion`.
+    last_x: f64,
+    last_y: f64,
+    /// Latest `axis_source` seen in the current frame. Wayland delivers
+    /// `axis_source` before the matching `axis` events; we cache it and
+    /// stamp every outgoing `pointer_axis` with the same source.
+    /// `0` (wheel) is the most common, matches the daemon's default.
+    axis_source: u32,
 }
 
 impl App {
@@ -290,6 +318,7 @@ impl App {
             uds_sock,
             name_prefix,
             dmabuf_caps: Arc::new(Mutex::new(BTreeMap::new())),
+            pointers: HashMap::new(),
         }
     }
 
@@ -385,9 +414,11 @@ impl Dispatch<WlRegistry, GlobalListContents> for App {
                 interface,
                 version,
             } => {
-                // Runtime hot-plug: only `wl_output` is interesting —
-                // compositor / dmabuf / layer_shell singletons don't
-                // appear post-startup in any sane setup.
+                // Runtime hot-plug: wl_output drives surface creation;
+                // wl_seat drives pointer attach (compositor may add a
+                // tablet/touchpad seat post-startup). Other singletons
+                // (compositor / dmabuf / layer_shell) don't appear
+                // post-startup in any sane setup.
                 if interface == "wl_output" {
                     if state.outputs.contains_key(&name) {
                         return;
@@ -409,9 +440,16 @@ impl Dispatch<WlRegistry, GlobalListContents> for App {
                     );
                     log::info!("hot-plug: wl_output name={name} added; bringing up surface");
                     state.bring_up_surface(name, qh);
+                } else if interface == "wl_seat" {
+                    registry.bind::<WlSeat, _, _>(name, version.min(5), qh, name);
+                    log::info!("hot-plug: wl_seat name={name} added");
                 }
             }
             Event::GlobalRemove { name } => {
+                if let Some(ctx) = state.pointers.remove(&name) {
+                    log::info!("hot-unplug: wl_seat name={name} removed");
+                    ctx.pointer.release();
+                }
                 if let Some(entry) = state.outputs.remove(&name) {
                     log::info!("hot-unplug: wl_output name={name} removed");
                     // Tear down the worker thread cooperatively:
@@ -459,6 +497,209 @@ impl Dispatch<WlSurface, u32> for App {
         // Enter/Leave and surface scale events ignored — the compositor
         // drives layer-surface sizing via configure, and we don't care
         // which seats hover us.
+    }
+}
+
+impl Dispatch<WlSeat, u32> for App {
+    fn event(
+        state: &mut Self,
+        seat: &WlSeat,
+        event: wl_seat::Event,
+        data: &u32,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let seat_name = *data;
+        match event {
+            wl_seat::Event::Capabilities { capabilities } => {
+                // WEnum<Capability> — only Pointer matters; keyboard/
+                // touch don't drive the wallpaper.
+                let has_pointer = match capabilities {
+                    wayland_client::WEnum::Value(c) =>
+                        c.contains(wl_seat::Capability::Pointer),
+                    _ => false,
+                };
+                let already = state.pointers.contains_key(&seat_name);
+                if has_pointer && !already {
+                    let pointer = seat.get_pointer(qh, seat_name);
+                    state.pointers.insert(seat_name, PointerCtx {
+                        pointer,
+                        focus_output: None,
+                        last_x: 0.0,
+                        last_y: 0.0,
+                        axis_source: 0,
+                    });
+                    log::info!("wl_seat name={seat_name} acquired pointer");
+                } else if !has_pointer && already {
+                    if let Some(ctx) = state.pointers.remove(&seat_name) {
+                        ctx.pointer.release();
+                    }
+                    log::info!("wl_seat name={seat_name} lost pointer capability");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlPointer, u32> for App {
+    fn event(
+        state: &mut Self,
+        _p: &WlPointer,
+        event: wl_pointer::Event,
+        data: &u32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let seat_name = *data;
+        match event {
+            wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => {
+                let output_name = match surface.data::<u32>() {
+                    Some(n) => *n,
+                    None => return, // surface from another protocol (cursor?)
+                };
+                if let Some(ctx) = state.pointers.get_mut(&seat_name) {
+                    ctx.focus_output = Some(output_name);
+                    ctx.last_x = surface_x;
+                    ctx.last_y = surface_y;
+                }
+            }
+            wl_pointer::Event::Leave { .. } => {
+                if let Some(ctx) = state.pointers.get_mut(&seat_name) {
+                    ctx.focus_output = None;
+                }
+            }
+            wl_pointer::Event::Motion { time, surface_x, surface_y } => {
+                let (output_name, lx, ly) = {
+                    let Some(ctx) = state.pointers.get_mut(&seat_name) else { return };
+                    ctx.last_x = surface_x;
+                    ctx.last_y = surface_y;
+                    let Some(out) = ctx.focus_output else { return };
+                    (out, surface_x, surface_y)
+                };
+                let (x, y) = logical_to_physical(state, output_name, lx, ly);
+                send_pointer_req(
+                    state,
+                    output_name,
+                    &ProtoRequest::PointerMotion { x, y, timestamp_us: ms_to_us(time), modifiers: 0 },
+                    "pointer_motion",
+                );
+            }
+            wl_pointer::Event::Button { time, button, state: bstate, .. } => {
+                let (output_name, lx, ly) = {
+                    let Some(ctx) = state.pointers.get(&seat_name) else { return };
+                    let Some(out) = ctx.focus_output else { return };
+                    (out, ctx.last_x, ctx.last_y)
+                };
+                let (x, y) = logical_to_physical(state, output_name, lx, ly);
+                let state_u32 = match bstate {
+                    wayland_client::WEnum::Value(ButtonState::Pressed) => 1,
+                    wayland_client::WEnum::Value(ButtonState::Released) => 0,
+                    _ => return,
+                };
+                send_pointer_req(
+                    state,
+                    output_name,
+                    &ProtoRequest::PointerButton {
+                        x, y,
+                        button,
+                        state: state_u32,
+                        timestamp_us: ms_to_us(time),
+                        modifiers: 0,
+                    },
+                    "pointer_button",
+                );
+            }
+            wl_pointer::Event::Axis { time, axis, value } => {
+                let (output_name, lx, ly, src) = {
+                    let Some(ctx) = state.pointers.get(&seat_name) else { return };
+                    let Some(out) = ctx.focus_output else { return };
+                    (out, ctx.last_x, ctx.last_y, ctx.axis_source)
+                };
+                let (x, y) = logical_to_physical(state, output_name, lx, ly);
+                // Wayland value is in fraction-of-pixel; for wheel sources
+                // one click = 10.0. Daemon expects "logical notches" =
+                // wayland / 10 for wheel; for finger/continuous we still
+                // forward in the same scale (renderer-side smoothing).
+                let delta = (value as f32) / 10.0;
+                let (dx, dy) = match axis {
+                    wayland_client::WEnum::Value(wl_pointer::Axis::HorizontalScroll) => (delta, 0.0),
+                    wayland_client::WEnum::Value(wl_pointer::Axis::VerticalScroll) => (0.0, delta),
+                    _ => return,
+                };
+                send_pointer_req(
+                    state,
+                    output_name,
+                    &ProtoRequest::PointerAxis {
+                        x, y,
+                        delta_x: dx,
+                        delta_y: dy,
+                        source: src,
+                        timestamp_us: ms_to_us(time),
+                        modifiers: 0,
+                    },
+                    "pointer_axis",
+                );
+            }
+            wl_pointer::Event::AxisSource { axis_source } => {
+                if let Some(ctx) = state.pointers.get_mut(&seat_name) {
+                    ctx.axis_source = match axis_source {
+                        wayland_client::WEnum::Value(wl_pointer::AxisSource::Wheel) => 0,
+                        wayland_client::WEnum::Value(wl_pointer::AxisSource::Finger) => 1,
+                        wayland_client::WEnum::Value(wl_pointer::AxisSource::Continuous) => 2,
+                        // WheelTilt and unknown sources fall back to wheel —
+                        // the daemon's renderer-side treatment doesn't have a
+                        // separate code for them.
+                        _ => 0,
+                    };
+                }
+            }
+            _ => {} // Frame / AxisStop / AxisDiscrete / AxisValue120 ignored
+        }
+    }
+}
+
+/// Convert Wayland's monotonic-millisecond timestamp (u32 wraps every
+/// ~49.7 days) into the daemon's microsecond field. Truncation is fine
+/// since the daemon only uses it for input-event ordering, not absolute
+/// time; consumers that want monotonic absolute time stamp on receipt.
+fn ms_to_us(time_ms: u32) -> u64 {
+    (time_ms as u64).saturating_mul(1000)
+}
+
+/// Scale logical surface coords up to physical buffer pixels. The
+/// daemon's `RegisterDisplay`/`UpdateDisplay` reports physical width/
+/// height, so pointer events must match the same coordinate space.
+/// Uses `fractional_scale_120` when available, else integer `scale`.
+fn logical_to_physical(state: &App, output_name: u32, lx: f64, ly: f64) -> (f32, f32) {
+    let Some(entry) = state.outputs.get(&output_name) else { return (lx as f32, ly as f32) };
+    let Some(binding) = entry.binding.as_ref() else { return (lx as f32, ly as f32) };
+    let frac = binding.fractional_scale_120.load(Ordering::Relaxed);
+    let s = if frac > 0 {
+        frac as f64 / 120.0
+    } else {
+        binding.scale.load(Ordering::Relaxed).max(1) as f64
+    };
+    ((lx * s) as f32, (ly * s) as f32)
+}
+
+/// Send a pointer request through the focused output's UDS stream.
+/// Silent no-op while the worker is mid-handshake (`registered=false`)
+/// — early-input arrivals at startup would otherwise race with the
+/// `Hello`/`RegisterDisplay` exchange.
+fn send_pointer_req(state: &App, output_name: u32, req: &ProtoRequest, label: &str) {
+    let Some(entry) = state.outputs.get(&output_name) else { return };
+    let Some(binding) = entry.binding.as_ref() else { return };
+    if !binding.registered.load(Ordering::Relaxed) {
+        return;
+    }
+    let stream = match binding.stream.read().unwrap().as_ref() {
+        Some(s) => s.clone(),
+        None => return,
+    };
+    let _g = binding.send_lock.lock().unwrap();
+    if let Err(e) = codec::send_request(&stream, req, &[]) {
+        log::debug!("[{}] send {label} failed: {e}", binding.display_name);
     }
 }
 
@@ -1728,6 +1969,17 @@ fn main() -> Result<()> {
                         fractional_scale: None,
                         fractional_scale_120: 0,
                     },
+                );
+            }
+            "wl_seat" => {
+                // Bind v5+ if offered so we can read `axis_source`;
+                // v3 still works (axis events only, no source) — we
+                // default to "wheel" when no source has been seen.
+                globals.registry().bind::<WlSeat, _, _>(
+                    g.name,
+                    g.version.min(5),
+                    &qh,
+                    g.name,
                 );
             }
             _ => {}
