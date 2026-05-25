@@ -1236,18 +1236,38 @@ impl Dispatch<WpViewport, u32> for App {
 // ---------------------------------------------------------------------------
 
 fn uds_worker_loop(sock: PathBuf, binding: Arc<OutputBinding>) {
+    // Exponential backoff to ride out daemon/renderer crash loops without
+    // burning fds. Sessions that survive past STABLE_RESET reset to the
+    // initial delay; short-lived ones double up to MAX.
+    const INITIAL: Duration = Duration::from_secs(2);
+    const MAX: Duration = Duration::from_secs(30);
+    const STABLE_RESET: Duration = Duration::from_secs(20);
+    let mut delay = INITIAL;
     loop {
         if binding.closed.load(Ordering::SeqCst) {
             log::info!("[{}] output closed; worker exiting", binding.display_name);
             return;
         }
+        let started = std::time::Instant::now();
         let res = run_uds_session(&sock, &binding);
+        let lived = started.elapsed();
         // Always clear the active stream slot on session exit so the
         // hot-unplug path doesn't shutdown a stale fd on the next
         // connection.
         binding.stream.write().unwrap().take();
         binding.registered.store(false, Ordering::SeqCst);
         binding.last_pushed_size.lock().unwrap().take();
+        // Drop any release_syncobj fds still queued from the dying
+        // session — the compositor will never deliver wl_buffer.Release
+        // for these (the wl_surface state is being torn down), so the
+        // OwnedFds would otherwise leak and eventually exhaust
+        // RLIMIT_NOFILE (manifests as `recv event: ENOBUFS` because the
+        // kernel can't install incoming SCM_RIGHTS fds, then EMFILE on
+        // the next `connect`).
+        {
+            let mut g = binding.pending_release_fds.lock().unwrap();
+            g.clear();
+        }
         match res {
             Ok(()) => log::info!("[{}] UDS session ended cleanly", binding.display_name),
             Err(e) => log::warn!("[{}] UDS session error: {e:#}", binding.display_name),
@@ -1259,7 +1279,17 @@ fn uds_worker_loop(sock: PathBuf, binding: Arc<OutputBinding>) {
             );
             return;
         }
-        thread::sleep(Duration::from_secs(2));
+        if lived >= STABLE_RESET {
+            delay = INITIAL;
+        }
+        log::debug!(
+            "[{}] session lived {:?}; reconnecting in {:?}",
+            binding.display_name,
+            lived,
+            delay
+        );
+        thread::sleep(delay);
+        delay = std::cmp::min(delay * 2, MAX);
     }
 }
 
@@ -1526,7 +1556,12 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
     }
 
     let mut gen: Option<u64> = None;
-    let mut pool: Vec<WlBuffer> = Vec::new();
+    // Pool destroys every wl_buffer on drop. Without this, each session
+    // (or each new BindBuffers within a session) leaks compositor-side
+    // dma-buf imports — the proxy goes away but the wl_buffer object
+    // persists, holding fds in the compositor process. Over many
+    // reconnects the compositor's fd table is the next thing to blow.
+    let mut pool = ManagedPool::default();
     let mut buf_width: u32 = width;
     let mut buf_height: u32 = height;
     let mut frames_presented: u64 = 0;
@@ -1582,7 +1617,8 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                     fds,
                 )
                 .context("import DMA-BUFs")?;
-                pool = new_pool;
+                // Replace pool — old buffers get destroyed via Drop.
+                pool = ManagedPool(new_pool);
                 gen = Some(buffer_generation);
                 buf_width = bw;
                 buf_height = bh;
@@ -1805,7 +1841,10 @@ fn run_uds_session(sock: &Path, binding: &OutputBinding) -> Result<()> {
                         binding.display_name,
                         pool.len()
                     );
-                    pool.clear();
+                    // Reassign so Drop destroys every wl_buffer instead
+                    // of just clearing the Vec (which would leak the
+                    // compositor-side objects).
+                    pool = ManagedPool::default();
                     gen = None;
                 }
             }
@@ -1835,6 +1874,26 @@ fn map_transform(t: u32) -> Transform {
         6 => Transform::Flipped180,
         7 => Transform::Flipped270,
         _ => Transform::Normal,
+    }
+}
+
+/// Owning pool of imported wl_buffers. On drop, every buffer is
+/// destroyed so the compositor-side dma-buf import is released.
+#[derive(Default)]
+struct ManagedPool(Vec<WlBuffer>);
+
+impl Drop for ManagedPool {
+    fn drop(&mut self) {
+        for b in self.0.drain(..) {
+            b.destroy();
+        }
+    }
+}
+
+impl std::ops::Deref for ManagedPool {
+    type Target = Vec<WlBuffer>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
