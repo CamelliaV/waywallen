@@ -26,15 +26,21 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(WAYWALLEN_BUILD_DAEMON  "Build the Rust daemon via Corrosion"   ON)
 option(WAYWALLEN_BUILD_UI      "Build the Qt/QML UI"                   ON)
 option(WAYWALLEN_BUILD_PLUGINS "Build renderer plugins (image, video)" ON)
+option(WAYWALLEN_CARGO_OFFLINE "Pass --frozen to cargo (offline + locked, for flatpak)" OFF)
 
 if(WAYWALLEN_BUILD_DAEMON)
-    include(FetchCorrosion)
-    # NOTE: no LOCKED here — Cargo.lock is gitignored in this repo, so cargo
-    # must be allowed to (re)generate it on a fresh checkout. Flip to FROZEN
-    # if a committed Cargo.lock is added later for reproducible builds.
+    include(FetchDeps)
+    fetchdeps(${CMAKE_CURRENT_SOURCE_DIR}/deps.json NAMES Corrosion)
+    # FROZEN = --locked --offline; requires a committed/staged Cargo.lock
+    # and a vendored CARGO_HOME (set by the flatpak manifest).
+    set(_waywallen_corrosion_extra "")
+    if(WAYWALLEN_CARGO_OFFLINE)
+        list(APPEND _waywallen_corrosion_extra FROZEN)
+    endif()
     corrosion_import_crate(
         MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
         CRATES        waywallen waywallen-display-layer-shell
+        ${_waywallen_corrosion_extra}
     )
     install(IMPORTED_RUNTIME_ARTIFACTS
         waywallen

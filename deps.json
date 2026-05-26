@@ -1,5 +1,16 @@
 [
   {
+    "commit": "1499b14e4906a2890f5cee1547c8848db261753d",
+    "tag": "v0.6.1",
+    "dest": "build/_flatpak_deps/Corrosion-src",
+    "disable-shallow-clone": false,
+    "type": "git",
+    "url": "https://github.com/corrosion-rs/corrosion.git",
+    "x-cmake": {
+      "name": "Corrosion"
+    }
+  },
+  {
     "dest": "build/_flatpak_deps/asio-src",
     "disable-shallow-clone": false,
     "tag": "asio-1-30-2",
