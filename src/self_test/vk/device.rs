@@ -67,7 +67,9 @@ pub fn create(instance: &Instance, dev: &DeviceMeta) -> Result<VkDevice> {
     let ext_cstrs: Vec<&'static std::ffi::CStr> = vec![
         unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"VK_KHR_external_memory\0") },
         unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"VK_KHR_external_memory_fd\0") },
-        unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(b"VK_EXT_external_memory_dma_buf\0") },
+        unsafe {
+            std::ffi::CStr::from_bytes_with_nul_unchecked(b"VK_EXT_external_memory_dma_buf\0")
+        },
         unsafe {
             std::ffi::CStr::from_bytes_with_nul_unchecked(b"VK_EXT_image_drm_format_modifier\0")
         },
@@ -77,8 +79,8 @@ pub fn create(instance: &Instance, dev: &DeviceMeta) -> Result<VkDevice> {
     ];
     let ext_ptrs: Vec<*const i8> = ext_cstrs.iter().map(|c| c.as_ptr()).collect();
 
-    let mut tl_feat = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
-        .timeline_semaphore(true);
+    let mut tl_feat =
+        vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
     let queue_priorities = [1.0f32];
     let queue_ci = [vk::DeviceQueueCreateInfo::default()
         .queue_family_index(queue_family)
@@ -153,7 +155,5 @@ pub fn pick_memory_type_for_import(
             return Ok(i);
         }
     }
-    Err(anyhow!(
-        "no memory type matches type_bits=0x{type_bits:x}"
-    ))
+    Err(anyhow!("no memory type matches type_bits=0x{type_bits:x}"))
 }

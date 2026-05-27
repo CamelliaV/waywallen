@@ -126,8 +126,7 @@ impl Report {
                 .modifiers
                 .iter()
                 .filter(|m| {
-                    matches!(m.producer, ProbeOutcome::Ok)
-                        && matches!(m.consumer, ProbeOutcome::Ok)
+                    matches!(m.producer, ProbeOutcome::Ok) && matches!(m.consumer, ProbeOutcome::Ok)
                 })
                 .count();
             writeln!(
@@ -271,7 +270,11 @@ impl Report {
             .as_ref()
             .map(|b| b.color_mismatch > 0 || b.acquire_timeout > 0)
             .unwrap_or(false);
-        let fanout_fail = self.fanout.as_ref().map(|c| c.refcount_leaks > 0).unwrap_or(false);
+        let fanout_fail = self
+            .fanout
+            .as_ref()
+            .map(|c| c.refcount_leaks > 0)
+            .unwrap_or(false);
         if any_fail_matrix || render_fail || fanout_fail {
             "pass-with-warnings"
         } else {

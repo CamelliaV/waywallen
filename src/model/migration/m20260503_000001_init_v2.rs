@@ -12,7 +12,9 @@
 
 use sea_orm_migration::prelude::*;
 
-use crate::model::fts::{create_fts_table_and_triggers, drop_fts_table_and_triggers, rebuild_fts_table};
+use crate::model::fts::{
+    create_fts_table_and_triggers, drop_fts_table_and_triggers, rebuild_fts_table,
+};
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;

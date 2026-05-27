@@ -684,7 +684,14 @@ async fn dispatch_inner(
                     match state.renderer_manager.get(id).await {
                         Some(h) => {
                             let (tw, th) = h.texture_size();
-                            (h.name.clone(), h.pid.unwrap_or(0), h.gpu.major, h.gpu.minor, tw, th)
+                            (
+                                h.name.clone(),
+                                h.pid.unwrap_or(0),
+                                h.gpu.major,
+                                h.gpu.minor,
+                                tw,
+                                th,
+                            )
                         }
                         None => (String::new(), 0, 0, 0, 0, 0),
                     };
@@ -814,7 +821,7 @@ async fn dispatch_inner(
             // rules already say.
             let mut filters_with_search = r.filters.clone();
             let search_text = r.search_text.trim();
-            if ! search_text.is_empty() {
+            if !search_text.is_empty() {
                 let next_group = filters_with_search
                     .iter()
                     .map(|f| f.group)
@@ -885,7 +892,9 @@ async fn dispatch_inner(
                 .filter_map(|e| {
                     let rel =
                         crate::model::sync::relative_under_root(&e.library_root, &e.resource)?;
-                    db_meta_map.get(&(e.library_root.clone(), rel)).map(|m| m.id)
+                    db_meta_map
+                        .get(&(e.library_root.clone(), rel))
+                        .map(|m| m.id)
                 })
                 .collect();
             let tag_map = repo::list_tags_for_items(&state.db, &page_item_ids).await?;
@@ -949,14 +958,21 @@ async fn dispatch_inner(
                 .flatten()
                 .unwrap_or_default();
             let overrides = if let Some(m) = db_meta.as_ref() {
-                repo::get_user_property_overrides_raw(&state.db, m.id).await?
+                repo::get_user_property_overrides_raw(&state.db, m.id)
+                    .await?
                     .unwrap_or_default()
             } else {
                 String::new()
             };
 
             Res::WallpaperGet(pb::WallpaperGetResponse {
-                entry: Some(entry_to_pb(&entry, db_meta.as_ref(), tags, schema, overrides)),
+                entry: Some(entry_to_pb(
+                    &entry,
+                    db_meta.as_ref(),
+                    tags,
+                    schema,
+                    overrides,
+                )),
             })
         }
 
@@ -985,8 +1001,10 @@ async fn dispatch_inner(
             }
             // Push live: unknown keys on the renderer side go through
             // setPropertyString → MainSetProperty → shader cbuffer.
-            let push_tag = if let Some(h) =
-                state.renderer_manager.find_by_resource(&entry.resource).await
+            let push_tag = if let Some(h) = state
+                .renderer_manager
+                .find_by_resource(&entry.resource)
+                .await
             {
                 let kv = vec![(r.key.clone(), r.value.clone())];
                 let id = h.id.clone();
@@ -994,17 +1012,23 @@ async fn dispatch_inner(
                     .renderer_manager
                     .send_control(&h.id, ControlMsg::SettingChanged { settings: kv })
                     .await
-                    .map_err(|e| Error::Internal(anyhow::anyhow!(
-                        "send setting_changed to renderer {}: {e}",
-                        h.id
-                    )))?;
+                    .map_err(|e| {
+                        Error::Internal(anyhow::anyhow!(
+                            "send setting_changed to renderer {}: {e}",
+                            h.id
+                        ))
+                    })?;
                 format!("renderer={id}")
             } else {
                 String::from("offline")
             };
             log::debug!(
                 "WallpaperPropertySet: {}={} on {} persist={} push={}",
-                r.key, r.value, r.wallpaper_id, persist_tag, push_tag
+                r.key,
+                r.value,
+                r.wallpaper_id,
+                persist_tag,
+                push_tag
             );
             Res::WallpaperPropertySet(pb::WallpaperPropertySetResponse {})
         }
@@ -1058,11 +1082,7 @@ async fn dispatch_inner(
         }
 
         Req::GpuList(_) => {
-            let gpus = state
-                .gpus
-                .iter()
-                .map(gpu_info_to_pb)
-                .collect();
+            let gpus = state.gpus.iter().map(gpu_info_to_pb).collect();
             Res::GpuList(pb::GpuListResponse { gpus })
         }
 
@@ -1157,16 +1177,12 @@ async fn dispatch_inner(
             // settings are possible.
             let mut user_properties_json: Option<String> = None;
             if !entry.library_root.is_empty() {
-                if let Some(rel) = crate::model::sync::relative_under_root(
-                    &entry.library_root,
-                    &entry.resource,
-                ) {
-                    if let Some(m) = repo::find_item_by_library_path(
-                        &state.db,
-                        &entry.library_root,
-                        &rel,
-                    )
-                    .await?
+                if let Some(rel) =
+                    crate::model::sync::relative_under_root(&entry.library_root, &entry.resource)
+                {
+                    if let Some(m) =
+                        repo::find_item_by_library_path(&state.db, &entry.library_root, &rel)
+                            .await?
                     {
                         user_properties_json =
                             repo::get_user_property_overrides_raw(&state.db, m.id).await?;
@@ -1242,10 +1258,7 @@ async fn dispatch_inner(
                         // producer. See stop_renderers_orderly doc.
                         state
                             .router
-                            .stop_renderers_orderly(
-                                &to_stop,
-                                std::time::Duration::from_secs(1),
-                            )
+                            .stop_renderers_orderly(&to_stop, std::time::Duration::from_secs(1))
                             .await;
                     }
                     let new_id = state.renderer_manager.spawn(spawn_req).await?;

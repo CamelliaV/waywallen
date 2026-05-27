@@ -6,8 +6,8 @@ use anyhow::{anyhow, Context, Result};
 use super::format_uuid_hex;
 
 pub fn make_socket_path(tag: &str) -> Result<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| anyhow!("XDG_RUNTIME_DIR is not set"))?;
+    let runtime =
+        std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| anyhow!("XDG_RUNTIME_DIR is not set"))?;
     let dir = PathBuf::from(runtime).join("waywallen");
     if !dir.exists() {
         std::fs::create_dir_all(&dir).context("create $XDG_RUNTIME_DIR/waywallen")?;

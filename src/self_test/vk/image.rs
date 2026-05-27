@@ -70,9 +70,9 @@ pub fn create_with_modifiers(
     }
     .map_err(|e| anyhow!("vkAllocateMemory(dma-buf export): {e}"))?;
     unsafe {
-        vkd.device.bind_image_memory(image, memory, 0).map_err(|e| {
-            anyhow!("vkBindImageMemory: {e}")
-        })?;
+        vkd.device
+            .bind_image_memory(image, memory, 0)
+            .map_err(|e| anyhow!("vkBindImageMemory: {e}"))?;
     }
 
     let mut props = vk::ImageDrmFormatModifierPropertiesEXT::default();
@@ -216,9 +216,9 @@ pub fn import_dmabuf(
         anyhow!("vkAllocateMemory(import dma-buf): {e}")
     })?;
     unsafe {
-        vkd.device.bind_image_memory(image, memory, 0).map_err(|e| {
-            anyhow!("vkBindImageMemory(import): {e}")
-        })?;
+        vkd.device
+            .bind_image_memory(image, memory, 0)
+            .map_err(|e| anyhow!("vkBindImageMemory(import): {e}"))?;
     }
 
     let _ = format;
@@ -285,7 +285,8 @@ pub fn create_host_buffer(vkd: &VkDevice, size: u64) -> Result<HostBuffer> {
         vkd.device.bind_buffer_memory(buffer, memory, 0)?;
     }
     let mapped = unsafe {
-        vkd.device.map_memory(memory, 0, req.size, vk::MemoryMapFlags::empty())
+        vkd.device
+            .map_memory(memory, 0, req.size, vk::MemoryMapFlags::empty())
     }
     .map_err(|e| anyhow!("map_memory: {e}"))? as *mut u8;
     Ok(HostBuffer {

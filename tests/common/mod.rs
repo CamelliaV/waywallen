@@ -80,4 +80,3 @@ pub fn have_vulkan_device() -> bool {
 pub fn cpp_renderer_bin_from_env() -> Option<PathBuf> {
     std::env::var_os("WAYWALLEN_RENDERER_BIN").map(PathBuf::from)
 }
-

@@ -22,7 +22,10 @@ pub fn run_orchestrator(
     sock: &UnixStream,
 ) -> Result<ModifierMatrix> {
     let mut entries = query_supported(instance, phys, FORMAT)?;
-    log::info!("modifier_matrix: driver advertises {} modifier(s)", entries.len());
+    log::info!(
+        "modifier_matrix: driver advertises {} modifier(s)",
+        entries.len()
+    );
 
     entries.sort_by_key(|e| (e.modifier == 0) as u8);
     let mut results: Vec<ModifierResult> = Vec::with_capacity(entries.len());
@@ -107,8 +110,7 @@ fn probe_one_modifier(
     .map_err(|e| anyhow!("send ProbeModifier: {e}"))?;
     drop(fd);
 
-    let (msg, _fds) =
-        recv_msg(sock).map_err(|e| anyhow!("recv ProbeResult: {e}"))?;
+    let (msg, _fds) = recv_msg(sock).map_err(|e| anyhow!("recv ProbeResult: {e}"))?;
     match msg {
         TestMsg::ProbeResult {
             fourcc,
@@ -179,12 +181,10 @@ pub fn run_peer(vkd: &VkDevice, sock: &UnixStream) -> Result<()> {
                         message: format!("{e}"),
                     },
                 };
-                send_msg(sock, &reply, &[])
-                    .map_err(|e| anyhow!("send ProbeResult: {e}"))?;
+                send_msg(sock, &reply, &[]).map_err(|e| anyhow!("send ProbeResult: {e}"))?;
             }
             TestMsg::MatrixDone => {
-                send_msg(sock, &TestMsg::Ack, &[])
-                    .map_err(|e| anyhow!("send Ack: {e}"))?;
+                send_msg(sock, &TestMsg::Ack, &[]).map_err(|e| anyhow!("send Ack: {e}"))?;
                 return Ok(());
             }
             other => anyhow::bail!("unexpected {other:?}"),

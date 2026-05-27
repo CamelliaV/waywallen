@@ -20,8 +20,7 @@ pub type DbMetaMap = HashMap<(String, String), item::Model>;
 
 pub async fn load_db_meta_map(app: &Arc<AppState>) -> Result<DbMetaMap> {
     let libs = repo::list_libraries(&app.db).await?;
-    let lib_path_by_id: HashMap<i64, String> =
-        libs.into_iter().map(|l| (l.id, l.path)).collect();
+    let lib_path_by_id: HashMap<i64, String> = libs.into_iter().map(|l| (l.id, l.path)).collect();
     let items = repo::list_items_all(&app.db).await?;
     Ok(items
         .into_iter()
@@ -52,8 +51,7 @@ pub fn apply_wallpaper_sorts(
             Ok(k) if k != pb::WallpaperSortKey::Unspecified => k,
             _ => continue,
         };
-        let desc = pb::SortDirection::try_from(rule.direction)
-            == Ok(pb::SortDirection::Desc);
+        let desc = pb::SortDirection::try_from(rule.direction) == Ok(pb::SortDirection::Desc);
 
         entries.sort_by(|a, b| {
             let ord = match key {
@@ -71,7 +69,11 @@ pub fn apply_wallpaper_sorts(
                 }
                 pb::WallpaperSortKey::Unspecified => Ordering::Equal,
             };
-            if desc { ord.reverse() } else { ord }
+            if desc {
+                ord.reverse()
+            } else {
+                ord
+            }
         });
     }
 }

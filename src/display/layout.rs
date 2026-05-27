@@ -449,16 +449,25 @@ mod tests {
     #[test]
     fn point_identity_stretched_same_size() {
         let c = cfg((0.0, 0.0, 1920.0, 1080.0), (0.0, 0.0, 1920.0, 1080.0), 0);
-        approx(display_point_to_texture(100.0, 50.0, &c).unwrap(), (100.0, 50.0));
+        approx(
+            display_point_to_texture(100.0, 50.0, &c).unwrap(),
+            (100.0, 50.0),
+        );
         approx(display_point_to_texture(0.0, 0.0, &c).unwrap(), (0.0, 0.0));
-        approx(display_point_to_texture(1920.0, 1080.0, &c).unwrap(), (1920.0, 1080.0));
+        approx(
+            display_point_to_texture(1920.0, 1080.0, &c).unwrap(),
+            (1920.0, 1080.0),
+        );
     }
 
     #[test]
     fn point_stretched_4k_to_1080p() {
         // 4K texture stretched onto a 1080p display.
         let c = cfg((0.0, 0.0, 3840.0, 2160.0), (0.0, 0.0, 1920.0, 1080.0), 0);
-        approx(display_point_to_texture(960.0, 540.0, &c).unwrap(), (1920.0, 1080.0));
+        approx(
+            display_point_to_texture(960.0, 540.0, &c).unwrap(),
+            (1920.0, 1080.0),
+        );
         approx(display_point_to_texture(0.0, 0.0, &c).unwrap(), (0.0, 0.0));
     }
 
@@ -478,10 +487,7 @@ mod tests {
             (960.0, 540.0),
         );
         // Top-left of the visible picture (0, 75) maps to texture (0, 0).
-        approx(
-            display_point_to_texture(0.0, 75.0, &c).unwrap(),
-            (0.0, 0.0),
-        );
+        approx(display_point_to_texture(0.0, 75.0, &c).unwrap(), (0.0, 0.0));
         // In the top letterbox bar -> dropped.
         assert!(display_point_to_texture(400.0, 10.0, &c).is_none());
         // In the bottom letterbox bar -> dropped.
@@ -531,7 +537,10 @@ mod tests {
         // Buffer 100x200 (tall) -> 200x100 (wide) display.
         let c = cfg((0.0, 0.0, 100.0, 200.0), (0.0, 0.0, 200.0, 100.0), 1);
         // display top-left (0, 0) -> buffer top-right (100, 0)
-        approx(display_point_to_texture(0.0, 0.0, &c).unwrap(), (100.0, 0.0));
+        approx(
+            display_point_to_texture(0.0, 0.0, &c).unwrap(),
+            (100.0, 0.0),
+        );
         // display top-right (200, 0) -> buffer bottom-right (100, 200)
         approx(
             display_point_to_texture(200.0, 0.0, &c).unwrap(),
@@ -543,13 +552,19 @@ mod tests {
             (0.0, 200.0),
         );
         // display bottom-left (0, 100) -> buffer top-left (0, 0)
-        approx(display_point_to_texture(0.0, 100.0, &c).unwrap(), (0.0, 0.0));
+        approx(
+            display_point_to_texture(0.0, 100.0, &c).unwrap(),
+            (0.0, 0.0),
+        );
     }
 
     #[test]
     fn point_transform_180_inverse() {
         let c = cfg((0.0, 0.0, 1920.0, 1080.0), (0.0, 0.0, 1920.0, 1080.0), 2);
-        approx(display_point_to_texture(0.0, 0.0, &c).unwrap(), (1920.0, 1080.0));
+        approx(
+            display_point_to_texture(0.0, 0.0, &c).unwrap(),
+            (1920.0, 1080.0),
+        );
         approx(
             display_point_to_texture(1920.0, 1080.0, &c).unwrap(),
             (0.0, 0.0),
@@ -587,7 +602,10 @@ mod tests {
     fn point_transform_flipped_horizontal() {
         let c = cfg((0.0, 0.0, 1920.0, 1080.0), (0.0, 0.0, 1920.0, 1080.0), 4);
         // Horizontal flip: x mirrors, y stays.
-        approx(display_point_to_texture(0.0, 100.0, &c).unwrap(), (1920.0, 100.0));
+        approx(
+            display_point_to_texture(0.0, 100.0, &c).unwrap(),
+            (1920.0, 100.0),
+        );
         approx(
             display_point_to_texture(1920.0, 100.0, &c).unwrap(),
             (0.0, 100.0),
@@ -603,7 +621,10 @@ mod tests {
         // flipped + 90° CCW reduces to swap-axes on the unit square.
         let c = cfg((0.0, 0.0, 100.0, 200.0), (0.0, 0.0, 200.0, 100.0), 5);
         // (u, v) = (0.5, 0.5) (display center) → buffer (0.5, 0.5) -> (50, 100)
-        approx(display_point_to_texture(100.0, 50.0, &c).unwrap(), (50.0, 100.0));
+        approx(
+            display_point_to_texture(100.0, 50.0, &c).unwrap(),
+            (50.0, 100.0),
+        );
         // (u, v) = (0, 0) → (0, 0)
         approx(display_point_to_texture(0.0, 0.0, &c).unwrap(), (0.0, 0.0));
         // (u, v) = (1, 1) → (1, 1) -> (100, 200)
@@ -617,8 +638,14 @@ mod tests {
     fn point_transform_6_flipped_180_is_vertical_flip() {
         // flipped + 180° on the unit square = (u, 1-v): vertical flip.
         let c = cfg((0.0, 0.0, 1920.0, 1080.0), (0.0, 0.0, 1920.0, 1080.0), 6);
-        approx(display_point_to_texture(100.0, 0.0, &c).unwrap(), (100.0, 1080.0));
-        approx(display_point_to_texture(100.0, 1080.0, &c).unwrap(), (100.0, 0.0));
+        approx(
+            display_point_to_texture(100.0, 0.0, &c).unwrap(),
+            (100.0, 1080.0),
+        );
+        approx(
+            display_point_to_texture(100.0, 1080.0, &c).unwrap(),
+            (100.0, 0.0),
+        );
     }
 
     #[test]

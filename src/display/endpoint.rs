@@ -18,10 +18,10 @@ use crate::events::GlobalEvent;
 // — the explicit constructor over a `.into()` shorthand because the
 // closure-result inference inside `.map_err(|e| ...)` can't pin the
 // target Error type (multiple `From<anyhow::Error>` impls are visible).
+use crate::display::layout::display_point_to_texture;
 use crate::error::{Error, Result, ResultExt};
 use crate::renderer_manager::{BindSnapshot, RendererHandle};
 use crate::routing::{DisplayHandle, DisplayOutEvent, DisplayRegistration, Router};
-use crate::display::layout::display_point_to_texture;
 use crate::scheduler::ProjectedConfig;
 use crate::sync::{drm_device, FrameRecord};
 

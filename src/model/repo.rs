@@ -325,9 +325,18 @@ pub async fn upsert_item(db: &DatabaseConnection, args: ItemUpsertArgs<'_>) -> R
                     item::Column::UpdateAt,
                     item::Column::SyncAt,
                 ])
-                .value(item::Column::Size, Expr::cust("COALESCE(excluded.size, size)"))
-                .value(item::Column::Width, Expr::cust("COALESCE(excluded.width, width)"))
-                .value(item::Column::Height, Expr::cust("COALESCE(excluded.height, height)"))
+                .value(
+                    item::Column::Size,
+                    Expr::cust("COALESCE(excluded.size, size)"),
+                )
+                .value(
+                    item::Column::Width,
+                    Expr::cust("COALESCE(excluded.width, width)"),
+                )
+                .value(
+                    item::Column::Height,
+                    Expr::cust("COALESCE(excluded.height, height)"),
+                )
                 .value(
                     item::Column::ContentRating,
                     Expr::cust("COALESCE(excluded.content_rating, content_rating)"),
@@ -451,9 +460,7 @@ pub async fn random_item_by_filter(
     let combined = match (cond, exclude_id) {
         (Some(c), Some(eid)) if apply_exclude => Some(c.add(item::Column::Id.ne(eid))),
         (Some(c), _) => Some(c),
-        (None, Some(eid)) if apply_exclude => {
-            Some(Condition::all().add(item::Column::Id.ne(eid)))
-        }
+        (None, Some(eid)) if apply_exclude => Some(Condition::all().add(item::Column::Id.ne(eid))),
         (None, _) => None,
     };
 
@@ -497,16 +504,11 @@ pub async fn find_item_by_library_path(
         .filter(item::Column::Path.eq(relative_path))
         .one(db)
         .await
-        .with_context(|| {
-            format!("select item by lib={library_path} path={relative_path}")
-        })
+        .with_context(|| format!("select item by lib={library_path} path={relative_path}"))
 }
 
 /// Resolve a single item by DB id (with its library row).
-pub async fn get_item_with_library(
-    db: &DatabaseConnection,
-    id: i64,
-) -> Result<Option<QueueRow>> {
+pub async fn get_item_with_library(db: &DatabaseConnection, id: i64) -> Result<Option<QueueRow>> {
     let row = item::Entity::find_by_id(id)
         .find_also_related(library::Entity)
         .one(db)
@@ -614,10 +616,7 @@ pub async fn list_items_needing_probe(
         .add(item::Column::Height.is_null())
         .add(item::Column::ProbedAt.is_null())
         .add(item::Column::ModifiedAt.is_null())
-        .add(
-            Expr::col(item::Column::ProbedAt)
-                .lt(Expr::col(item::Column::ModifiedAt)),
-        );
+        .add(Expr::col(item::Column::ProbedAt).lt(Expr::col(item::Column::ModifiedAt)));
 
     let rows = item::Entity::find()
         .filter(
@@ -843,8 +842,12 @@ pub async fn get_user_property_overrides(
         .one(db)
         .await
         .with_context(|| format!("select item by id={item_id} for overrides"))?;
-    let Some(item) = row else { return Ok(HashMap::new()) };
-    let Some(raw) = item.user_property_overrides else { return Ok(HashMap::new()) };
+    let Some(item) = row else {
+        return Ok(HashMap::new());
+    };
+    let Some(raw) = item.user_property_overrides else {
+        return Ok(HashMap::new());
+    };
     match serde_json::from_str::<HashMap<String, String>>(&raw) {
         Ok(m) => Ok(m),
         Err(e) => {
@@ -892,10 +895,7 @@ pub async fn merge_user_property_overrides(
     let serialized = if current.is_empty() {
         None
     } else {
-        Some(
-            serde_json::to_string(&current)
-                .context("serialize user_property_overrides")?,
-        )
+        Some(serde_json::to_string(&current).context("serialize user_property_overrides")?)
     };
     let active = item::ActiveModel {
         id: sea_orm::Set(item_id),
@@ -934,7 +934,6 @@ pub async fn list_tags_for_items(
     }
     Ok(out)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1265,9 +1264,9 @@ mod tests {
         // Existing exclusion behavior for singleton: still returns the
         // excluded id rather than an empty result.
         let _ = only_first; // unused; checking via direct count above
-        // Singleton via DB-level filter would need column-equality
-        // helpers we don't have here; the count assertion is enough
-        // to lock in the precondition `random_item_by_filter` relies on.
+                            // Singleton via DB-level filter would need column-equality
+                            // helpers we don't have here; the count assertion is enough
+                            // to lock in the precondition `random_item_by_filter` relies on.
         let _ = ids;
     }
 

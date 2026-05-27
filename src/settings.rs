@@ -216,9 +216,7 @@ pub struct WallpaperSortRuleState {
 }
 
 impl WallpaperSortRuleState {
-    pub fn vec_to_pb(
-        v: &[WallpaperSortRuleState],
-    ) -> Vec<crate::control_proto::WallpaperSortRule> {
+    pub fn vec_to_pb(v: &[WallpaperSortRuleState]) -> Vec<crate::control_proto::WallpaperSortRule> {
         v.iter()
             .map(|r| crate::control_proto::WallpaperSortRule {
                 key: r.key,
@@ -582,7 +580,9 @@ impl SettingsStore {
         let prefs = g.displays.get(display_name);
         ResolvedAutopause {
             mode: prefs.and_then(|p| p.autopause_mode).unwrap_or(d.mode),
-            resume_ms: prefs.and_then(|p| p.autopause_resume_ms).unwrap_or(d.resume_ms),
+            resume_ms: prefs
+                .and_then(|p| p.autopause_resume_ms)
+                .unwrap_or(d.resume_ms),
         }
     }
 

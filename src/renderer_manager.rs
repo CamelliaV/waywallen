@@ -662,8 +662,7 @@ impl RendererManager {
         let format_caps: Arc<StdMutex<Option<crate::dma::negotiate::PeerCaps>>> =
             Arc::new(StdMutex::new(None));
         let pending_configure: Arc<StdMutex<Option<u32>>> = Arc::new(StdMutex::new(None));
-        let clear_rgba: Arc<StdMutex<[f32; 4]>> =
-            Arc::new(StdMutex::new([0.0, 0.0, 0.0, 1.0]));
+        let clear_rgba: Arc<StdMutex<[f32; 4]>> = Arc::new(StdMutex::new([0.0, 0.0, 0.0, 1.0]));
 
         let sock = Arc::new(StdMutex::new(std_stream));
         let reader_sock = sock.clone();
@@ -1108,15 +1107,9 @@ impl RendererManager {
                     log::info!("renderer {id}: graceful shutdown");
                 }
                 Err(_) => {
-                    log::warn!(
-                        "renderer {id}: Shutdown timeout (5s), escalating to SIGKILL"
-                    );
+                    log::warn!("renderer {id}: Shutdown timeout (5s), escalating to SIGKILL");
                     let _ = child.start_kill();
-                    let _ = tokio::time::timeout(
-                        Duration::from_secs(1),
-                        child.wait(),
-                    )
-                    .await;
+                    let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
                 }
             }
         }
@@ -1775,7 +1768,7 @@ mod init_handshake_tests {
             extras: HashMap::new(),
             wp_type: "scene".into(),
             settings,
-                        test_pattern: false,
+            test_pattern: false,
             renderer_name: None,
             user_properties_json: None,
         };
@@ -1844,7 +1837,7 @@ mod reuse_tests {
         Arc::new(RendererHandle {
             id: id.into(),
             wp_type: "video".into(),
-                        extras,
+            extras,
             name: "waywallen-mpv".into(),
             pid: None,
             gpu: DrmNode::UNKNOWN,
@@ -1868,7 +1861,7 @@ mod reuse_tests {
             extras,
             wp_type: "video".into(),
             settings: HashMap::new(),
-                        test_pattern: false,
+            test_pattern: false,
             renderer_name: None,
             user_properties_json: None,
         }
@@ -1927,7 +1920,7 @@ mod reuse_tests {
         let h = Arc::new(RendererHandle {
             id: "h1".into(),
             wp_type: "video".into(),
-                        extras: HashMap::new(),
+            extras: HashMap::new(),
             name: "waywallen-mpv".into(),
             pid: None,
             gpu: DrmNode::UNKNOWN,

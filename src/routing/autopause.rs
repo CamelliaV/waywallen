@@ -21,8 +21,7 @@ pub const FLAG_MAXIMIZED: u32 = 1 << 2;
 pub const FLAG_FULLSCREEN: u32 = 1 << 3;
 
 /// Bits the daemon understands. Higher bits are reserved and ignored.
-pub const FLAGS_KNOWN: u32 =
-    FLAG_NON_MINIMIZED | FLAG_ACTIVE | FLAG_MAXIMIZED | FLAG_FULLSCREEN;
+pub const FLAGS_KNOWN: u32 = FLAG_NON_MINIMIZED | FLAG_ACTIVE | FLAG_MAXIMIZED | FLAG_FULLSCREEN;
 
 /// Pure mapping: (mode, flags) → "autopause this display?".
 pub fn decide(mode: AutopauseMode, flags: u32) -> bool {
@@ -69,7 +68,13 @@ mod tests {
 
     #[test]
     fn never_is_never() {
-        for flags in [0, FLAG_NON_MINIMIZED, FLAG_ACTIVE, FLAG_FULLSCREEN, 0xFFFFFFFF] {
+        for flags in [
+            0,
+            FLAG_NON_MINIMIZED,
+            FLAG_ACTIVE,
+            FLAG_FULLSCREEN,
+            0xFFFFFFFF,
+        ] {
             assert!(!decide(AutopauseMode::Never, flags));
         }
     }

@@ -209,8 +209,8 @@ async fn run_async(
                 vk::Fence::null(),
             )?;
         }
-        let sync_fd = export_signaled_sync_fd(vkd, signal_sem)
-            .context("export signaled SYNC_FD")?;
+        let sync_fd =
+            export_signaled_sync_fd(vkd, signal_sem).context("export signaled SYNC_FD")?;
         renderer.push_self_test_sync_fd(n as u64, sync_fd);
 
         renderer.push_self_test_event(EventMsg::FrameReady {
@@ -255,7 +255,12 @@ async fn run_async(
         let status = c.collect_status();
         log::info!(
             "fanout: display#{} frames={} ok={} mismatch={} clean={} fatal={:?}",
-            c.slot, status.frames, status.ok, status.mismatch, status.clean_exit, status.fatal
+            c.slot,
+            status.frames,
+            status.ok,
+            status.mismatch,
+            status.clean_exit,
+            status.fatal
         );
         total_ok += status.ok;
         total_mismatch += status.mismatch;
@@ -266,8 +271,8 @@ async fn run_async(
     }
 
     let expected_total = NUM_DISPLAYS as u64 * FRAMES as u64;
-    report.refcount_leaks = u32::try_from(expected_total.saturating_sub(total_frames))
-        .unwrap_or(u32::MAX);
+    report.refcount_leaks =
+        u32::try_from(expected_total.saturating_sub(total_frames)).unwrap_or(u32::MAX);
     let frames_per_display_ok = total_ok / NUM_DISPLAYS as u64;
     report.ok = u32::try_from(frames_per_display_ok).unwrap_or(u32::MAX);
     if had_fatal {
@@ -448,12 +453,10 @@ impl Clone for ChildStatus {
 }
 
 fn make_socket_dir() -> Result<std::path::PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| anyhow!("XDG_RUNTIME_DIR is not set"))?;
-    let dir = std::path::PathBuf::from(runtime).join(format!(
-        "waywallen-test-{}-fanout",
-        std::process::id()
-    ));
+    let runtime =
+        std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| anyhow!("XDG_RUNTIME_DIR is not set"))?;
+    let dir = std::path::PathBuf::from(runtime)
+        .join(format!("waywallen-test-{}-fanout", std::process::id()));
     if dir.exists() {
         let _ = std::fs::remove_dir_all(&dir);
     }

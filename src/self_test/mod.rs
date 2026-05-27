@@ -87,9 +87,10 @@ impl TestArgs {
                         .ok_or_else(|| anyhow::anyhow!("--test-gpus requires a value"))?;
                     let mut idxs = Vec::new();
                     for part in v.split(',') {
-                        let n: usize = part.trim().parse().map_err(|e| {
-                            anyhow::anyhow!("--test-gpus: bad index {part:?}: {e}")
-                        })?;
+                        let n: usize = part
+                            .trim()
+                            .parse()
+                            .map_err(|e| anyhow::anyhow!("--test-gpus: bad index {part:?}: {e}"))?;
                         idxs.push(n);
                     }
                     if idxs.is_empty() {
@@ -147,7 +148,10 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
 }
 
 fn parse_uuid_hex(s: &str) -> anyhow::Result<[u8; 16]> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
     if cleaned.len() != 32 {
         anyhow::bail!("expected 32 hex chars, got {}", cleaned.len());
     }

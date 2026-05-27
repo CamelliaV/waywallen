@@ -96,13 +96,13 @@ pub fn enumerate(ctx: &VkContext) -> Result<Vec<DeviceMeta>> {
 
         let mut id_props = vk::PhysicalDeviceIDProperties::default();
         let mut drm_props = vk::PhysicalDeviceDrmPropertiesEXT::default();
-        let mut props2 = vk::PhysicalDeviceProperties2::default()
-            .push_next(&mut id_props);
+        let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut id_props);
         if has_drm_ext {
             props2 = props2.push_next(&mut drm_props);
         }
         unsafe {
-            ctx.instance.get_physical_device_properties2(phys, &mut props2);
+            ctx.instance
+                .get_physical_device_properties2(phys, &mut props2);
         }
 
         let drm_render = if has_drm_ext && drm_props.has_render == vk::TRUE {

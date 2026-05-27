@@ -9,14 +9,14 @@ use super::super::report::RenderLoop;
 use super::super::vk::cmd;
 use super::super::vk::device::VkDevice;
 use super::super::vk::image::{
-    create_host_buffer, create_with_modifiers, destroy_host_buffer, export_dmabuf,
-    import_dmabuf, HostBuffer,
+    create_host_buffer, create_with_modifiers, destroy_host_buffer, export_dmabuf, import_dmabuf,
+    HostBuffer,
 };
 use super::super::vk::modifier::format_modifier;
 use super::super::vk::sync::{
     create_binary_importable, create_binary_sync_fd_exportable, create_timeline_exportable,
-    export_opaque_fd, export_signaled_sync_fd, import_sync_fd_temporary,
-    import_timeline_opaque_fd, wait_timeline, TimelineSemaphore,
+    export_opaque_fd, export_signaled_sync_fd, import_sync_fd_temporary, import_timeline_opaque_fd,
+    wait_timeline, TimelineSemaphore,
 };
 
 const FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
@@ -288,11 +288,7 @@ pub fn run_orchestrator(
 
         let (msg, _) = recv_msg(sock).map_err(|e| anyhow!("recv ColorReport n={n}: {e}"))?;
         match msg {
-            TestMsg::ColorReport {
-                n: rn,
-                ok,
-                ..
-            } => {
+            TestMsg::ColorReport { n: rn, ok, .. } => {
                 if rn != n {
                     log::warn!("render_loop: out-of-order ColorReport: n={rn} expected {n}");
                 }
@@ -448,8 +444,7 @@ pub fn run_peer(vkd: &VkDevice, sock: &UnixStream) -> Result<()> {
                 )?;
             }
             TestMsg::LoopDone => {
-                send_msg(sock, &TestMsg::Ack, &[])
-                    .map_err(|e| anyhow!("send Ack: {e}"))?;
+                send_msg(sock, &TestMsg::Ack, &[]).map_err(|e| anyhow!("send Ack: {e}"))?;
                 break;
             }
             other => anyhow::bail!("unexpected {other:?}"),

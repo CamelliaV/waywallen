@@ -952,14 +952,10 @@ impl Router {
                 .collect();
             let mut affected = Vec::new();
             for lid in link_ids {
-                let changed = inner.table.update_link_geometry(
-                    lid,
-                    None,
-                    None,
-                    None,
-                    Some(new_clear),
-                    None,
-                );
+                let changed =
+                    inner
+                        .table
+                        .update_link_geometry(lid, None, None, None, Some(new_clear), None);
                 if changed {
                     if let Some(link) = inner.table.get_link(lid) {
                         affected.push(link.display_id);
@@ -1013,11 +1009,7 @@ impl Router {
     /// Pause transitions are immediate; resume transitions are held
     /// for `resume_ms` so that a brief pause→play→pause flap (e.g. a
     /// video player UI peek) doesn't restart the renderer twice.
-    pub async fn update_display_window_state(
-        self: &Arc<Self>,
-        display_id: DisplayId,
-        flags: u32,
-    ) {
+    pub async fn update_display_window_state(self: &Arc<Self>, display_id: DisplayId, flags: u32) {
         // Snapshot under lock: compute the new raw decision and decide
         // whether anything observable changed.
         enum Action {
@@ -1168,9 +1160,7 @@ impl Router {
                     let need_reconcile = {
                         let inner = router.inner.lock().await;
                         // A newer transition invalidated us — bail.
-                        inner.session_gen == gen
-                            && !inner.session_locked
-                            && !inner.session_inactive
+                        inner.session_gen == gen && !inner.session_locked && !inner.session_inactive
                     };
                     if need_reconcile {
                         router.reconcile_lifecycle().await;
@@ -1565,11 +1555,7 @@ impl Router {
             self.unregister_renderer(id).await;
         }
         for id in ids {
-            if self
-                .await_unbind_acks_for(id, ack_timeout)
-                .await
-                .is_err()
-            {
+            if self.await_unbind_acks_for(id, ack_timeout).await.is_err() {
                 log::warn!(
                     "router: stop_renderers_orderly: unbind_done ack timeout \
                      for renderer {id}; proceeding with kill anyway"
@@ -2699,7 +2685,11 @@ mod tests {
 
     /// Build a single-fourcc PeerCaps with the given (modifier,plane_count) list.
     /// Mirrors `negotiate::tests::caps_one_fourcc` but in scope here.
-    fn build_caps(fourcc: u32, mods: &[(u64, u32)], uuid_byte: u8) -> crate::dma::negotiate::PeerCaps {
+    fn build_caps(
+        fourcc: u32,
+        mods: &[(u64, u32)],
+        uuid_byte: u8,
+    ) -> crate::dma::negotiate::PeerCaps {
         use crate::dma::negotiate as N;
         let mod_count = mods.len() as u32;
         let modifiers: Vec<u64> = mods.iter().map(|(m, _)| *m).collect();
@@ -3008,8 +2998,8 @@ mod tests {
     // autopause — daemon-side decision driven by `window_state`
     // -----------------------------------------------------------------
 
-    use crate::settings::{AutopauseMode, DisplayPrefs, SettingsStore};
     use super::autopause as ap;
+    use crate::settings::{AutopauseMode, DisplayPrefs, SettingsStore};
 
     async fn settings_with_autopause(
         display_name: &str,
@@ -3095,7 +3085,10 @@ mod tests {
                 break;
             }
         }
-        assert!(flipped, "resume timer did not flip renderer back to playing");
+        assert!(
+            flipped,
+            "resume timer did not flip renderer back to playing"
+        );
     }
 
     #[tokio::test(start_paused = true)]

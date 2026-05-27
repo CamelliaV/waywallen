@@ -42,9 +42,7 @@ pub struct GpuInfo {
 
 impl GpuInfo {
     pub fn matches_render(&self, major: u32, minor: u32) -> bool {
-        self.render_node.is_some()
-            && self.render_major == major
-            && self.render_minor == minor
+        self.render_node.is_some() && self.render_major == major && self.render_minor == minor
     }
 }
 
@@ -56,7 +54,10 @@ pub(crate) fn enumerate_with_roots(dev_dri: &Path, sysfs_char: &Path) -> Vec<Gpu
     let entries = match fs::read_dir(dev_dri) {
         Ok(it) => it,
         Err(e) => {
-            log::warn!("gpu::enumerate: read_dir({}) failed: {e}", dev_dri.display());
+            log::warn!(
+                "gpu::enumerate: read_dir({}) failed: {e}",
+                dev_dri.display()
+            );
             return Vec::new();
         }
     };
@@ -124,13 +125,7 @@ pub(crate) fn enumerate_with_roots(dev_dri: &Path, sysfs_char: &Path) -> Vec<Gpu
         .collect();
     // Stable order for UI: entries with a render node first, then by
     // render minor / primary minor.
-    out.sort_by_key(|g| {
-        (
-            g.render_node.is_none(),
-            g.render_minor,
-            g.primary_minor,
-        )
-    });
+    out.sort_by_key(|g| (g.render_node.is_none(), g.render_minor, g.primary_minor));
     out
 }
 

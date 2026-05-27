@@ -16,9 +16,9 @@ mod events;
 mod gpu;
 mod ipc;
 mod model;
-mod queue;
 mod plugin;
 mod probe;
+mod queue;
 mod renderer_manager;
 mod routing;
 mod scheduler;
@@ -207,7 +207,6 @@ fn resolve_ui_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
     }
     None
 }
-
 
 fn main() -> anyhow::Result<()> {
     // `--test` is the user-runnable diagnostic path. Detect it before
@@ -630,15 +629,13 @@ async fn async_main() -> anyhow::Result<()> {
     // is event-driven below.
     {
         let restore_state = state.clone();
-        state.tasks.spawn_async(
-            tasks::TaskKind::Startup,
-            "startup/restore",
-            async move {
+        state
+            .tasks
+            .spawn_async(tasks::TaskKind::Startup, "startup/restore", async move {
                 control::run_restore(&restore_state)
                     .await
                     .map_err(anyhow::Error::from)
-            },
-        );
+            });
     }
 
     // Background media-probe scheduler. Pulls items with NULL media
@@ -691,7 +688,9 @@ async fn async_main() -> anyhow::Result<()> {
     // Latch DaemonReady and broadcast a fresh StatusSync so live WS
     // clients flip phase=READY. Late connections pick the latched
     // value up via the connect-time snapshot.
-    state.events.publish(crate::events::GlobalEvent::DaemonReady);
+    state
+        .events
+        .publish(crate::events::GlobalEvent::DaemonReady);
     state
         .events
         .publish(crate::events::GlobalEvent::StatusChanged);

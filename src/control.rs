@@ -289,14 +289,13 @@ async fn apply_wallpaper_core(
     // accidental name collisions with native plugin settings.
     let mut user_properties_json: Option<String> = None;
     if !entry.library_root.is_empty() {
-        if let Some(rel) =
-            crate::queue::relative_under_root(&entry.library_root, &entry.resource)
-        {
+        if let Some(rel) = crate::queue::relative_under_root(&entry.library_root, &entry.resource) {
             if let Ok(Some(it)) =
                 repo::find_item_by_library_path(&app.db, &entry.library_root, &rel).await
             {
-                user_properties_json =
-                    repo::get_user_property_overrides_raw(&app.db, it.id).await.unwrap_or(None);
+                user_properties_json = repo::get_user_property_overrides_raw(&app.db, it.id)
+                    .await
+                    .unwrap_or(None);
             }
         }
     }
@@ -397,9 +396,8 @@ pub async fn step(app: &Arc<AppState>, delta: i32) -> Result<String> {
     use crate::queue::Mode;
 
     let (filters, logics) = app.settings.global().wallpaper_filter.to_pb();
-    let sorts = crate::settings::WallpaperSortRuleState::vec_to_pb(
-        &app.settings.global().wallpaper_sorts,
-    );
+    let sorts =
+        crate::settings::WallpaperSortRuleState::vec_to_pb(&app.settings.global().wallpaper_sorts);
     let mode = app.queue.lock().await.mode;
 
     let entry_id: String = match mode {

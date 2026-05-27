@@ -181,10 +181,7 @@ impl DBusMenu {
                 }
             }
             ID_SHUFFLE => {
-                let was_on = matches!(
-                    app.queue.lock().await.mode,
-                    crate::queue::Mode::Shuffle
-                );
+                let was_on = matches!(app.queue.lock().await.mode, crate::queue::Mode::Shuffle);
                 control::set_shuffle(&app, !was_on).await;
             }
             ID_ROT_OFF | ID_ROT_30S | ID_ROT_1M | ID_ROT_5M | ID_ROT_15M | ID_ROT_1H => {
@@ -327,8 +324,7 @@ pub async fn notify_menu_changed(app: &Arc<AppState>) {
         );
         updates.push((id, p));
     }
-    let _ =
-        DBusMenu::items_properties_updated(iface.signal_context(), updates, Vec::new()).await;
+    let _ = DBusMenu::items_properties_updated(iface.signal_context(), updates, Vec::new()).await;
 
     // Bump the revision + emit LayoutUpdated as a fallback for hosts
     // that don't honor ItemsPropertiesUpdated. The revision must
@@ -506,10 +502,7 @@ async fn dispatch_click(app: &Arc<AppState>, id: i32) -> zbus::fdo::Result<()> {
             let _ = control::rescan(app).await;
         }
         ID_SHUFFLE => {
-            let was_on = matches!(
-                app.queue.lock().await.mode,
-                crate::queue::Mode::Shuffle
-            );
+            let was_on = matches!(app.queue.lock().await.mode, crate::queue::Mode::Shuffle);
             control::set_shuffle(app, !was_on).await;
         }
         ID_ROT_OFF | ID_ROT_30S | ID_ROT_1M | ID_ROT_5M | ID_ROT_15M | ID_ROT_1H => {

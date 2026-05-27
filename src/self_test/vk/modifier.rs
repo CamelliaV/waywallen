@@ -25,8 +25,8 @@ pub fn query_supported(
     }
 
     let mut buf = vec![vk::DrmFormatModifierPropertiesEXT::default(); count];
-    let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
-        .drm_format_modifier_properties(&mut buf);
+    let mut list =
+        vk::DrmFormatModifierPropertiesListEXT::default().drm_format_modifier_properties(&mut buf);
     let mut props2 = vk::FormatProperties2::default().push_next(&mut list);
     unsafe {
         instance.get_physical_device_format_properties2(phys, format, &mut props2);
@@ -41,8 +41,7 @@ pub fn query_supported(
 }
 
 pub fn supports_clear_and_export(entry: &ModifierEntry) -> bool {
-    let need = vk::FormatFeatureFlags::COLOR_ATTACHMENT
-        | vk::FormatFeatureFlags::TRANSFER_SRC;
+    let need = vk::FormatFeatureFlags::COLOR_ATTACHMENT | vk::FormatFeatureFlags::TRANSFER_SRC;
     entry.features.contains(need)
 }
 

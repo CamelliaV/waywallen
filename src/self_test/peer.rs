@@ -8,7 +8,10 @@ use super::vk::instance::find_by_uuid;
 use super::TestArgs;
 
 pub fn run_peer(args: TestArgs) -> Result<()> {
-    let socket = args.socket.clone().ok_or_else(|| anyhow!("--socket required"))?;
+    let socket = args
+        .socket
+        .clone()
+        .ok_or_else(|| anyhow!("--socket required"))?;
     let want_uuid = args.vk_uuid.ok_or_else(|| anyhow!("--vk-uuid required"))?;
 
     let vk = super::vk::instance::create_instance().context("vkCreateInstance")?;

@@ -149,8 +149,7 @@ fn run_session(
         anyhow::bail!("waywallen_display_bind_vulkan rc={rc}");
     }
 
-    let sock_c = CString::new(socket.to_string_lossy().as_bytes())
-        .context("socket path nul")?;
+    let sock_c = CString::new(socket.to_string_lossy().as_bytes()).context("socket path nul")?;
     let name_c = CString::new(display_name.as_bytes()).context("display name nul")?;
     let inst_c = CString::new(instance_id.as_bytes()).context("instance id nul")?;
     let rc = unsafe {
@@ -211,8 +210,8 @@ fn run_session(
         }
     }
 
-    let clean = state.fatal.is_none()
-        && (state.frames_seen >= state.max_frames || state.disconnected);
+    let clean =
+        state.fatal.is_none() && (state.frames_seen >= state.max_frames || state.disconnected);
     emit_status(
         slot,
         state.frames_seen,
@@ -425,18 +424,12 @@ unsafe extern "C" fn cb_textures_releasing(
     }));
 }
 
-unsafe extern "C" fn cb_config(
-    _user_data: *mut c_void,
-    _c: *const ffi::waywallen_config_t,
-) {
+unsafe extern "C" fn cb_config(_user_data: *mut c_void, _c: *const ffi::waywallen_config_t) {
     // self_test ignores config geometry — orchestrator runs at a single
     // size and cares about frame fidelity only.
 }
 
-unsafe extern "C" fn cb_frame_ready(
-    user_data: *mut c_void,
-    f: *const ffi::waywallen_frame_t,
-) {
+unsafe extern "C" fn cb_frame_ready(user_data: *mut c_void, f: *const ffi::waywallen_frame_t) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let state = &mut *(user_data as *mut DisplayState);
         let f = &*f;
@@ -457,11 +450,7 @@ unsafe extern "C" fn cb_frame_ready(
     }));
 }
 
-unsafe extern "C" fn cb_disconnected(
-    user_data: *mut c_void,
-    code: c_int,
-    msg: *const c_char,
-) {
+unsafe extern "C" fn cb_disconnected(user_data: *mut c_void, code: c_int, msg: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let state = &mut *(user_data as *mut DisplayState);
         state.disconnected = true;

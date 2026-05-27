@@ -44,10 +44,8 @@ pub fn import_timeline_opaque_fd(vkd: &VkDevice, fd: OwnedFd) -> Result<Timeline
         .semaphore_type(vk::SemaphoreType::TIMELINE)
         .initial_value(0);
     let sem = unsafe {
-        vkd.device.create_semaphore(
-            &vk::SemaphoreCreateInfo::default().push_next(&mut tl),
-            None,
-        )
+        vkd.device
+            .create_semaphore(&vk::SemaphoreCreateInfo::default().push_next(&mut tl), None)
     }
     .map_err(|e| anyhow!("vkCreateSemaphore(timeline import-target): {e}"))?;
 
@@ -106,11 +104,7 @@ pub fn export_signaled_sync_fd(vkd: &VkDevice, sem: vk::Semaphore) -> Result<Own
 /// Import a SYNC_FD into a binary semaphore as a TEMPORARY association
 /// (per spec: SYNC_FD imports are always temporary, so the next submit
 /// that waits on `sem` consumes the fence and resets the binding).
-pub fn import_sync_fd_temporary(
-    vkd: &VkDevice,
-    sem: vk::Semaphore,
-    fd: OwnedFd,
-) -> Result<()> {
+pub fn import_sync_fd_temporary(vkd: &VkDevice, sem: vk::Semaphore, fd: OwnedFd) -> Result<()> {
     let raw = fd.into_raw_fd();
     unsafe {
         vkd.ext_sem_fd

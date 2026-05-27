@@ -60,9 +60,7 @@ impl Daemon1 {
 
     #[zbus(property)]
     async fn set_queue_mode(&self, value: String) -> zbus::Result<()> {
-        let mode = crate::queue::Mode::from_str(&value).ok_or_else(|| {
-            zbus::Error::InvalidField
-        })?;
+        let mode = crate::queue::Mode::from_str(&value).ok_or_else(|| zbus::Error::InvalidField)?;
         control::set_mode(&self.app, mode).await;
         Ok(())
     }

@@ -180,7 +180,10 @@ async fn monitor_screen_saver(conn: zbus::Connection, tx: mpsc::Sender<SessionEv
     while let Some(signal) = stream.next().await {
         match signal.args() {
             Ok(args) => {
-                log::info!("session_monitor: ScreenSaver.ActiveChanged new_value={}", args.new_value());
+                log::info!(
+                    "session_monitor: ScreenSaver.ActiveChanged new_value={}",
+                    args.new_value()
+                );
                 let _ = tx.send(SessionEvent::Locked(*args.new_value())).await;
             }
             Err(e) => {
@@ -202,9 +205,7 @@ async fn monitor_login_session(conn: zbus::Connection, tx: mpsc::Sender<SessionE
     let session_id = match std::env::var("XDG_SESSION_ID") {
         Ok(id) if !id.is_empty() => id,
         _ => {
-            log::warn!(
-                "session_monitor: $XDG_SESSION_ID not set; user-switch detection disabled"
-            );
+            log::warn!("session_monitor: $XDG_SESSION_ID not set; user-switch detection disabled");
             return;
         }
     };

@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::probe::media::{AvFormatProbe, MediaProbe};
 use crate::model::repo;
+use crate::probe::media::{AvFormatProbe, MediaProbe};
 use crate::wallpaper_type::{WallpaperEntry, WallpaperType};
 
 // ---------------------------------------------------------------------------

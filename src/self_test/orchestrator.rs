@@ -39,11 +39,7 @@ pub fn run(args: TestArgs) -> Result<()> {
         .first()
         .copied()
         .unwrap_or_else(|| pick_default(&devices));
-    let child_idx = args
-        .device_indices
-        .get(1)
-        .copied()
-        .unwrap_or(orch_idx);
+    let child_idx = args.device_indices.get(1).copied().unwrap_or(orch_idx);
     for (label, idx) in [("orch", orch_idx), ("child", child_idx)] {
         if idx >= devices.len() {
             anyhow::bail!(
@@ -98,7 +94,12 @@ pub fn run(args: TestArgs) -> Result<()> {
         std::process::exit(2);
     }
 
-    match super::tests::modifier_matrix::run_orchestrator(&vk.instance, orch_dev.phys, &vkd, &stream) {
+    match super::tests::modifier_matrix::run_orchestrator(
+        &vk.instance,
+        orch_dev.phys,
+        &vkd,
+        &stream,
+    ) {
         Ok(p) => report.modifier_matrix = Some(p),
         Err(e) => {
             log::warn!("modifier_matrix aborted: {e}");
@@ -167,10 +168,7 @@ fn accept_with_timeout(l: &UnixListener, timeout: Duration) -> Result<UnixStream
     }
 }
 
-fn do_handshake(
-    stream: &UnixStream,
-    dev_meta: &super::vk::instance::DeviceMeta,
-) -> Result<()> {
+fn do_handshake(stream: &UnixStream, dev_meta: &super::vk::instance::DeviceMeta) -> Result<()> {
     let (msg, _fds) = recv_msg(stream).context("recv Hello")?;
     let TestMsg::Hello {
         version,

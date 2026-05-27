@@ -24,6 +24,10 @@ use wayland_client::protocol::{
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::{self, WpFractionalScaleManagerV1},
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
     zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
@@ -32,10 +36,6 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
-};
-use wayland_protocols::wp::fractional_scale::v1::client::{
-    wp_fractional_scale_manager_v1::{self, WpFractionalScaleManagerV1},
-    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, Layer, ZwlrLayerShellV1},
@@ -515,20 +515,22 @@ impl Dispatch<WlSeat, u32> for App {
                 // WEnum<Capability> — only Pointer matters; keyboard/
                 // touch don't drive the wallpaper.
                 let has_pointer = match capabilities {
-                    wayland_client::WEnum::Value(c) =>
-                        c.contains(wl_seat::Capability::Pointer),
+                    wayland_client::WEnum::Value(c) => c.contains(wl_seat::Capability::Pointer),
                     _ => false,
                 };
                 let already = state.pointers.contains_key(&seat_name);
                 if has_pointer && !already {
                     let pointer = seat.get_pointer(qh, seat_name);
-                    state.pointers.insert(seat_name, PointerCtx {
-                        pointer,
-                        focus_output: None,
-                        last_x: 0.0,
-                        last_y: 0.0,
-                        axis_source: 0,
-                    });
+                    state.pointers.insert(
+                        seat_name,
+                        PointerCtx {
+                            pointer,
+                            focus_output: None,
+                            last_x: 0.0,
+                            last_y: 0.0,
+                            axis_source: 0,
+                        },
+                    );
                     log::info!("wl_seat name={seat_name} acquired pointer");
                 } else if !has_pointer && already {
                     if let Some(ctx) = state.pointers.remove(&seat_name) {
@@ -553,7 +555,12 @@ impl Dispatch<WlPointer, u32> for App {
     ) {
         let seat_name = *data;
         match event {
-            wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => {
+            wl_pointer::Event::Enter {
+                surface,
+                surface_x,
+                surface_y,
+                ..
+            } => {
                 let output_name = match surface.data::<u32>() {
                     Some(n) => *n,
                     None => return, // surface from another protocol (cursor?)
@@ -569,9 +576,15 @@ impl Dispatch<WlPointer, u32> for App {
                     ctx.focus_output = None;
                 }
             }
-            wl_pointer::Event::Motion { time, surface_x, surface_y } => {
+            wl_pointer::Event::Motion {
+                time,
+                surface_x,
+                surface_y,
+            } => {
                 let (output_name, lx, ly) = {
-                    let Some(ctx) = state.pointers.get_mut(&seat_name) else { return };
+                    let Some(ctx) = state.pointers.get_mut(&seat_name) else {
+                        return;
+                    };
                     ctx.last_x = surface_x;
                     ctx.last_y = surface_y;
                     let Some(out) = ctx.focus_output else { return };
@@ -581,13 +594,25 @@ impl Dispatch<WlPointer, u32> for App {
                 send_pointer_req(
                     state,
                     output_name,
-                    &ProtoRequest::PointerMotion { x, y, timestamp_us: ms_to_us(time), modifiers: 0 },
+                    &ProtoRequest::PointerMotion {
+                        x,
+                        y,
+                        timestamp_us: ms_to_us(time),
+                        modifiers: 0,
+                    },
                     "pointer_motion",
                 );
             }
-            wl_pointer::Event::Button { time, button, state: bstate, .. } => {
+            wl_pointer::Event::Button {
+                time,
+                button,
+                state: bstate,
+                ..
+            } => {
                 let (output_name, lx, ly) = {
-                    let Some(ctx) = state.pointers.get(&seat_name) else { return };
+                    let Some(ctx) = state.pointers.get(&seat_name) else {
+                        return;
+                    };
                     let Some(out) = ctx.focus_output else { return };
                     (out, ctx.last_x, ctx.last_y)
                 };
@@ -601,7 +626,8 @@ impl Dispatch<WlPointer, u32> for App {
                     state,
                     output_name,
                     &ProtoRequest::PointerButton {
-                        x, y,
+                        x,
+                        y,
                         button,
                         state: state_u32,
                         timestamp_us: ms_to_us(time),
@@ -612,7 +638,9 @@ impl Dispatch<WlPointer, u32> for App {
             }
             wl_pointer::Event::Axis { time, axis, value } => {
                 let (output_name, lx, ly, src) = {
-                    let Some(ctx) = state.pointers.get(&seat_name) else { return };
+                    let Some(ctx) = state.pointers.get(&seat_name) else {
+                        return;
+                    };
                     let Some(out) = ctx.focus_output else { return };
                     (out, ctx.last_x, ctx.last_y, ctx.axis_source)
                 };
@@ -623,7 +651,9 @@ impl Dispatch<WlPointer, u32> for App {
                 // forward in the same scale (renderer-side smoothing).
                 let delta = (value as f32) / 10.0;
                 let (dx, dy) = match axis {
-                    wayland_client::WEnum::Value(wl_pointer::Axis::HorizontalScroll) => (delta, 0.0),
+                    wayland_client::WEnum::Value(wl_pointer::Axis::HorizontalScroll) => {
+                        (delta, 0.0)
+                    }
                     wayland_client::WEnum::Value(wl_pointer::Axis::VerticalScroll) => (0.0, delta),
                     _ => return,
                 };
@@ -631,7 +661,8 @@ impl Dispatch<WlPointer, u32> for App {
                     state,
                     output_name,
                     &ProtoRequest::PointerAxis {
-                        x, y,
+                        x,
+                        y,
                         delta_x: dx,
                         delta_y: dy,
                         source: src,
@@ -672,8 +703,12 @@ fn ms_to_us(time_ms: u32) -> u64 {
 /// height, so pointer events must match the same coordinate space.
 /// Uses `fractional_scale_120` when available, else integer `scale`.
 fn logical_to_physical(state: &App, output_name: u32, lx: f64, ly: f64) -> (f32, f32) {
-    let Some(entry) = state.outputs.get(&output_name) else { return (lx as f32, ly as f32) };
-    let Some(binding) = entry.binding.as_ref() else { return (lx as f32, ly as f32) };
+    let Some(entry) = state.outputs.get(&output_name) else {
+        return (lx as f32, ly as f32);
+    };
+    let Some(binding) = entry.binding.as_ref() else {
+        return (lx as f32, ly as f32);
+    };
     let frac = binding.fractional_scale_120.load(Ordering::Relaxed);
     let s = if frac > 0 {
         frac as f64 / 120.0
@@ -688,8 +723,12 @@ fn logical_to_physical(state: &App, output_name: u32, lx: f64, ly: f64) -> (f32,
 /// — early-input arrivals at startup would otherwise race with the
 /// `Hello`/`RegisterDisplay` exchange.
 fn send_pointer_req(state: &App, output_name: u32, req: &ProtoRequest, label: &str) {
-    let Some(entry) = state.outputs.get(&output_name) else { return };
-    let Some(binding) = entry.binding.as_ref() else { return };
+    let Some(entry) = state.outputs.get(&output_name) else {
+        return;
+    };
+    let Some(binding) = entry.binding.as_ref() else {
+        return;
+    };
     if !binding.registered.load(Ordering::Relaxed) {
         return;
     }
@@ -933,11 +972,7 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
                     .lock()
                     .map(|g| g.values().map(|v| v.len()).sum())
                     .unwrap_or(0);
-                let fourccs = state
-                    .dmabuf_caps
-                    .lock()
-                    .map(|g| g.len())
-                    .unwrap_or(0);
+                let fourccs = state.dmabuf_caps.lock().map(|g| g.len()).unwrap_or(0);
                 log::info!(
                     "dmabuf_feedback: done — caps now hold {fourccs} fourccs, \
                      {count} (fourcc,mod) entries"
@@ -2072,12 +2107,9 @@ fn main() -> Result<()> {
                 // Bind v5+ if offered so we can read `axis_source`;
                 // v3 still works (axis events only, no source) — we
                 // default to "wheel" when no source has been seen.
-                globals.registry().bind::<WlSeat, _, _>(
-                    g.name,
-                    g.version.min(5),
-                    &qh,
-                    g.name,
-                );
+                globals
+                    .registry()
+                    .bind::<WlSeat, _, _>(g.name, g.version.min(5), &qh, g.name);
             }
             _ => {}
         }
