@@ -112,6 +112,23 @@ pub async fn add_library(
         .with_context(|| format!("insert library plugin={plugin_id} path={path}"))
 }
 
+/// Stable library path representation for de-duping user-selected
+/// folders. Existing paths are canonicalized so symlinks like
+/// `~/.steam/steam` and `~/.local/share/Steam` collapse to one Steam
+/// root; non-existing paths fall back to a trailing-slash-normalized
+/// string so tests and future lazy-created folders remain usable.
+pub fn normalize_library_path(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    std::path::Path::new(trimmed)
+        .canonicalize()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
 pub async fn find_library(
     db: &DatabaseConnection,
     plugin_id: i64,
@@ -123,6 +140,18 @@ pub async fn find_library(
         .one(db)
         .await
         .with_context(|| format!("select library plugin={plugin_id} path={path}"))
+}
+
+pub async fn find_library_by_normalized_path(
+    db: &DatabaseConnection,
+    plugin_id: i64,
+    path: &str,
+) -> Result<Option<library::Model>> {
+    let needle = normalize_library_path(path);
+    let libs = list_libraries_by_plugin(db, plugin_id).await?;
+    Ok(libs
+        .into_iter()
+        .find(|lib| normalize_library_path(&lib.path) == needle))
 }
 
 pub async fn list_libraries_by_plugin(
@@ -983,6 +1012,27 @@ mod tests {
         add_library(&db, a.id, "/shared").await.unwrap();
         add_library(&db, b.id, "/shared").await.unwrap();
         assert!(add_library(&db, a.id, "/shared").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn find_library_by_normalized_path_matches_symlink_equivalent() {
+        let db = mem_db().await;
+        let plugin = upsert_plugin(&db, "wallpaper_engine", "").await.unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("Steam");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("steam-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let lib = add_library(&db, plugin.id, link.to_str().unwrap())
+            .await
+            .unwrap();
+        let found = find_library_by_normalized_path(&db, plugin.id, real.to_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(found.id, lib.id);
     }
 
     #[tokio::test]

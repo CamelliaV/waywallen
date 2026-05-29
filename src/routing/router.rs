@@ -266,6 +266,11 @@ struct Inner {
     /// carries the snapshot taken at spawn time and is a no-op if the
     /// counter has advanced (i.e. a newer transition invalidated it).
     session_gen: u64,
+    /// Aggregated MPRIS media-playback state. True when at least one
+    /// external player reports `PlaybackStatus=Playing`.
+    media_playing: bool,
+    /// Generation counter for the media-pause debounce timer.
+    media_gen: u64,
     /// Timestamp of the Pause transition for each paused renderer.
     /// Consumed by the reaper task to enforce `IDLE_KILL_TIMEOUT`.
     paused_since: HashMap<RendererId, Instant>,
@@ -335,6 +340,8 @@ impl Router {
                 session_locked: false,
                 session_inactive: false,
                 session_gen: 0,
+                media_playing: false,
+                media_gen: 0,
             }),
             mgr,
             events_tx,
@@ -1170,6 +1177,62 @@ impl Router {
         }
     }
 
+    /// Update the global media-playback pause state driven by the
+    /// MPRIS monitor. Pause transitions are immediate; resume
+    /// transitions reuse the global autopause resume debounce.
+    pub async fn update_media_playing(self: &Arc<Self>, playing: bool) {
+        enum Action {
+            ScheduleResume { gen: u64, ms: u32 },
+            Reconcile,
+            Noop,
+        }
+        let action = {
+            let mut inner = self.inner.lock().await;
+            if inner.media_playing == playing {
+                Action::Noop
+            } else {
+                inner.media_playing = playing;
+                inner.media_gen = inner.media_gen.wrapping_add(1);
+                if playing {
+                    Action::Reconcile
+                } else {
+                    let resume_ms = self
+                        .settings
+                        .get()
+                        .map(|s| s.global().autopause.resume_ms)
+                        .unwrap_or(500);
+                    Action::ScheduleResume {
+                        gen: inner.media_gen,
+                        ms: resume_ms,
+                    }
+                }
+            }
+        };
+        match action {
+            Action::Noop => {}
+            Action::Reconcile => self.reconcile_lifecycle().await,
+            Action::ScheduleResume { gen, ms } => {
+                let router = Arc::clone(self);
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(ms as u64)).await;
+                    let need_reconcile = {
+                        let inner = router.inner.lock().await;
+                        inner.media_gen == gen && !inner.media_playing
+                    };
+                    if need_reconcile {
+                        router.reconcile_lifecycle().await;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Re-run lifecycle diffing after settings that affect global
+    /// pause conditions change.
+    pub async fn reconcile_pause_state(self: &Arc<Self>) {
+        self.reconcile_lifecycle().await;
+    }
+
     /// Whether this renderer is currently in the paused set (zero
     /// enabled links). Returns `false` for unknown ids.
     pub async fn is_paused(self: &Arc<Self>, renderer_id: &str) -> bool {
@@ -1849,7 +1912,16 @@ impl Router {
                     (ap.pause_on_lock && inner.session_locked)
                         || (ap.pause_on_user_switch && inner.session_inactive)
                 };
-                let should_pause = !has_active_link || any_autopaused || session_paused;
+                let media_paused = {
+                    let ap = self
+                        .settings
+                        .get()
+                        .map(|s| s.global().autopause)
+                        .unwrap_or_default();
+                    ap.pause_on_media_playing && inner.media_playing
+                };
+                let should_pause =
+                    !has_active_link || any_autopaused || session_paused || media_paused;
                 let was_paused = inner.paused_renderers.contains(&rid);
                 if !should_pause && was_paused {
                     inner.paused_renderers.remove(&rid);
@@ -3076,6 +3148,7 @@ mod tests {
         // spawned task takes multiple awaits to land (lock + reconcile
         // + control send via spawn_blocking) so spin briefly until
         // is_paused flips, capped at a small bound.
+        tokio::task::yield_now().await;
         tokio::time::advance(std::time::Duration::from_millis(250)).await;
         let mut flipped = false;
         for _ in 0..50 {
@@ -3115,6 +3188,7 @@ mod tests {
             .update_display_window_state(h.id, ap::FLAG_NON_MINIMIZED | ap::FLAG_FULLSCREEN)
             .await;
 
+        tokio::task::yield_now().await;
         tokio::time::advance(std::time::Duration::from_millis(500)).await;
         // Give any in-flight tasks a chance to run; renderer must
         // remain paused — the orphan resume timer from the middle
@@ -3139,6 +3213,79 @@ mod tests {
         router
             .update_display_window_state(h.id, ap::FLAG_NON_MINIMIZED | ap::FLAG_FULLSCREEN)
             .await;
+        assert!(!router.is_paused("r1").await);
+    }
+
+    async fn settings_with_media_pause(enabled: bool, resume_ms: u32) -> Arc<SettingsStore> {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::load_or_default(tmp.path().join("settings.toml")).await;
+        store.update(|s| {
+            s.global.autopause.pause_on_media_playing = enabled;
+            s.global.autopause.resume_ms = resume_ms;
+        });
+        std::mem::forget(tmp);
+        store
+    }
+
+    #[tokio::test]
+    async fn media_playing_pauses_renderer_when_enabled() {
+        let mgr = Arc::new(RendererManager::new_default());
+        let router = Router::new(mgr.clone());
+        router.attach_settings(settings_with_media_pause(true, 100).await);
+        let r = RendererHandle::test_stub("r1", "scene");
+        mgr.register_test_handle(r.clone()).await;
+        router.register_renderer(r.clone()).await;
+        let _h = router.register_display(reg("HDMI-A-1", 1920, 1080)).await;
+
+        assert!(!router.is_paused("r1").await);
+
+        router.update_media_playing(true).await;
+        assert!(router.is_paused("r1").await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn media_pause_resume_is_debounced() {
+        let mgr = Arc::new(RendererManager::new_default());
+        let router = Router::new(mgr.clone());
+        router.attach_settings(settings_with_media_pause(true, 200).await);
+        let r = RendererHandle::test_stub("r1", "scene");
+        mgr.register_test_handle(r.clone()).await;
+        router.register_renderer(r.clone()).await;
+        let _h = router.register_display(reg("HDMI-A-1", 1920, 1080)).await;
+
+        router.update_media_playing(true).await;
+        assert!(router.is_paused("r1").await);
+
+        router.update_media_playing(false).await;
+        assert!(router.is_paused("r1").await);
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(250)).await;
+        let mut flipped = false;
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            if !router.is_paused("r1").await {
+                flipped = true;
+                break;
+            }
+        }
+        assert!(
+            flipped,
+            "media pause resume timer did not flip renderer back to playing"
+        );
+    }
+
+    #[tokio::test]
+    async fn media_playing_is_inert_when_disabled() {
+        let mgr = Arc::new(RendererManager::new_default());
+        let router = Router::new(mgr.clone());
+        router.attach_settings(settings_with_media_pause(false, 100).await);
+        let r = RendererHandle::test_stub("r1", "scene");
+        mgr.register_test_handle(r.clone()).await;
+        router.register_renderer(r.clone()).await;
+        let _h = router.register_display(reg("HDMI-A-1", 1920, 1080)).await;
+
+        router.update_media_playing(true).await;
         assert!(!router.is_paused("r1").await);
     }
 

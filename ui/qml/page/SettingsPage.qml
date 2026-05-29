@@ -130,6 +130,50 @@ MD.Page {
             width: m_flick.contentWidth
             spacing: 12
 
+            // ---- Startup ----------------------------------------------------
+            SectionPane {
+                contentItem: ColumnLayout {
+                    spacing: 12
+
+                    SectionTitle { text: qsTr("Startup") }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            MD.Text {
+                                text: qsTr("Silent startup")
+                                typescale: MD.Token.typescale.body_medium
+                                color: MD.Token.color.on_surface
+                            }
+                            MD.Text {
+                                text: qsTr("Start in the tray without opening the window")
+                                typescale: MD.Token.typescale.body_small
+                                color: MD.Token.color.on_surface_variant
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        MD.Switch {
+                            id: m_silent_startup
+                            onToggled: root._mut(g => {
+                                g.silentStartup = checked;
+                            })
+                        }
+                        Binding {
+                            target: m_silent_startup
+                            property: "checked"
+                            value: getQ.global?.silentStartup ?? true
+                        }
+                    }
+                }
+            }
+
             // ---- Auto-pause -------------------------------------------------
             SectionPane {
                 contentItem: ColumnLayout {
@@ -228,7 +272,8 @@ MD.Page {
                                 const ap = Object.assign({},
                                     g.autopause || ({ mode: 0, resumeMs: 500,
                                                       pauseOnLock: true,
-                                                      pauseOnUserSwitch: true }));
+                                                      pauseOnUserSwitch: true,
+                                                      pauseOnMediaPlaying: true }));
                                 ap.pauseOnLock = checked;
                                 g.autopause = ap;
                             })
@@ -268,7 +313,8 @@ MD.Page {
                                 const ap = Object.assign({},
                                     g.autopause || ({ mode: 0, resumeMs: 500,
                                                       pauseOnLock: true,
-                                                      pauseOnUserSwitch: true }));
+                                                      pauseOnUserSwitch: true,
+                                                      pauseOnMediaPlaying: true }));
                                 ap.pauseOnUserSwitch = checked;
                                 g.autopause = ap;
                             })
@@ -277,6 +323,47 @@ MD.Page {
                             target: m_pause_on_user_switch
                             property: "checked"
                             value: getQ.global?.autopause?.pauseOnUserSwitch ?? true
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            MD.Text {
+                                text: qsTr("Pause when media is playing")
+                                typescale: MD.Token.typescale.body_medium
+                                color: MD.Token.color.on_surface
+                            }
+                            MD.Text {
+                                text: qsTr("Pause while another MPRIS media player is playing")
+                                typescale: MD.Token.typescale.body_small
+                                color: MD.Token.color.on_surface_variant
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        MD.Switch {
+                            id: m_pause_on_media
+                            onToggled: root._mut(g => {
+                                const ap = Object.assign({},
+                                    g.autopause || ({ mode: 0, resumeMs: 500,
+                                                      pauseOnLock: true,
+                                                      pauseOnUserSwitch: true,
+                                                      pauseOnMediaPlaying: true }));
+                                ap.pauseOnMediaPlaying = checked;
+                                g.autopause = ap;
+                            })
+                        }
+                        Binding {
+                            target: m_pause_on_media
+                            property: "checked"
+                            value: getQ.global?.autopause?.pauseOnMediaPlaying ?? true
                         }
                     }
                 }

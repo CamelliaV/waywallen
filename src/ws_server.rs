@@ -424,9 +424,11 @@ fn global_to_pb(g: &crate::settings::GlobalSettings) -> pb::GlobalSettings {
             resume_ms: g.autopause.resume_ms,
             pause_on_lock: g.autopause.pause_on_lock,
             pause_on_user_switch: g.autopause.pause_on_user_switch,
+            pause_on_media_playing: Some(g.autopause.pause_on_media_playing),
         }),
         queue_mode: g.queue_mode.clone(),
         rotation_secs: g.rotation_secs,
+        silent_startup: Some(g.silent_startup),
     }
 }
 
@@ -1411,6 +1413,7 @@ async fn dispatch_inner(
             // Snapshot pre-mutation layout defaults so we know whether
             // to re-sync display set_configs after the write.
             let prev_layout = state.settings.snapshot().global.layout.clone();
+            let prev_autopause = state.settings.snapshot().global.autopause;
             let prev_queue_mode = state.settings.snapshot().global.queue_mode.clone();
             let prev_rotation_secs = state.settings.snapshot().global.rotation_secs;
             state.settings.update(|s| {
@@ -1437,11 +1440,17 @@ async fn dispatch_inner(
                         s.global.autopause.resume_ms = ap.resume_ms;
                         s.global.autopause.pause_on_lock = ap.pause_on_lock;
                         s.global.autopause.pause_on_user_switch = ap.pause_on_user_switch;
+                        if let Some(v) = ap.pause_on_media_playing {
+                            s.global.autopause.pause_on_media_playing = v;
+                        }
                     }
                     if !g.queue_mode.is_empty() {
                         s.global.queue_mode = g.queue_mode.clone();
                     }
                     s.global.rotation_secs = g.rotation_secs;
+                    if let Some(v) = g.silent_startup {
+                        s.global.silent_startup = v;
+                    }
                 }
                 s.plugins = new_plugins.clone();
             });
@@ -1476,6 +1485,10 @@ async fn dispatch_inner(
             let new_rotation_secs = state.settings.snapshot().global.rotation_secs;
             if new_rotation_secs != prev_rotation_secs {
                 state.rotation.set_interval(new_rotation_secs);
+            }
+            let new_autopause = state.settings.snapshot().global.autopause;
+            if new_autopause != prev_autopause {
+                state.router.reconcile_pause_state().await;
             }
             // Step 4: live renderer hot-reload.
             // For each plugin that actually changed, walk live
@@ -1571,7 +1584,14 @@ async fn dispatch_inner(
             let plugin = repo::find_plugin_by_name(&state.db, &r.plugin_name)
                 .await?
                 .ok_or_else(|| Error::SourcePluginNotFound(r.plugin_name.clone()))?;
-            let lib = repo::add_library(&state.db, plugin.id, &r.path).await?;
+            let path = repo::normalize_library_path(&r.path);
+            if repo::find_library_by_normalized_path(&state.db, plugin.id, &path)
+                .await?
+                .is_some()
+            {
+                return Ok(Res::LibraryAdd(pb::Empty {}));
+            }
+            let lib = repo::add_library(&state.db, plugin.id, &path).await?;
             let snap = LibrarySnapshot {
                 id: lib.id,
                 path: lib.path,

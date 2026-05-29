@@ -1,4 +1,8 @@
 module;
+#include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
+#include <QUrl>
 #include "waywallen/util.moc.h"
 
 module waywallen;
@@ -234,6 +238,23 @@ QString Util::bbcodeToHtml(const QString& src) const {
     }
 
     return stage;
+}
+
+bool Util::openContainingFolder(const QString& path) const {
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty()) return false;
+
+    const QFileInfo info(trimmed);
+    QString target;
+    if (info.exists() && info.isDir()) {
+        target = info.absoluteFilePath();
+    } else {
+        const QDir dir = info.absoluteDir();
+        if (! dir.exists()) return false;
+        target = dir.absolutePath();
+    }
+
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(target));
 }
 
 // --- WE wire color round-trip --------------------------------------------

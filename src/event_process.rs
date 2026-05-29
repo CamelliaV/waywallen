@@ -98,7 +98,7 @@ fn spawn_wallpaper_recall(state: Arc<AppState>) {
             // Initial sweep of already-registered displays.
             for snap in state.router.snapshot_displays().await {
                 if seen.insert(snap.id) {
-                    record(&state, &mut pending, snap, SETTLE);
+                    record(&state, &mut pending, snap, SETTLE, true);
                 }
             }
 
@@ -126,7 +126,7 @@ fn spawn_wallpaper_recall(state: Arc<AppState>) {
                         };
                         for snap in snaps {
                             if seen.insert(snap.id) {
-                                record(&state, &mut pending, snap, SETTLE);
+                                record(&state, &mut pending, snap, SETTLE, false);
                             }
                         }
                     }
@@ -168,9 +168,15 @@ fn record(
     pending: &mut HashMap<String, (tokio::time::Instant, Vec<scheduler::DisplayId>)>,
     snap: routing::DisplaySnapshot,
     settle: Duration,
+    startup: bool,
 ) {
     let key = snap.instance_id.as_deref().unwrap_or(&snap.name);
-    let Some(wp_id) = state.settings.resolved_last_wallpaper(key) else {
+    let wp_id = if startup {
+        state.settings.startup_last_wallpaper(key)
+    } else {
+        state.settings.resolved_last_wallpaper(key)
+    };
+    let Some(wp_id) = wp_id else {
         return;
     };
     let entry = pending

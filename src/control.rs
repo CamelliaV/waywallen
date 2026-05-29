@@ -7,7 +7,7 @@
 //! on identical semantics (spawn-before-kill, router relink, playlist
 //! cursor tracking).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -715,7 +715,8 @@ pub async fn auto_detect_libraries(
             }
         };
         for path in paths {
-            match repo::find_library(&app.db, plugin.id, &path).await {
+            let path = repo::normalize_library_path(&path);
+            match repo::find_library_by_normalized_path(&app.db, plugin.id, &path).await {
                 Ok(Some(_)) => continue,
                 Ok(None) => {}
                 Err(e) => {
@@ -797,11 +798,16 @@ pub async fn libraries_by_plugin_name(
 ) -> Result<HashMap<String, Vec<String>>> {
     let libs = repo::list_libraries(db).await?;
     let mut by_plugin_id: HashMap<i64, Vec<String>> = HashMap::new();
+    let mut seen_by_plugin_id: HashMap<i64, HashSet<String>> = HashMap::new();
     for lib in libs {
-        by_plugin_id
-            .entry(lib.plugin_id)
-            .or_default()
-            .push(lib.path);
+        let normalized = repo::normalize_library_path(&lib.path);
+        let seen = seen_by_plugin_id.entry(lib.plugin_id).or_default();
+        if seen.insert(normalized.clone()) {
+            by_plugin_id
+                .entry(lib.plugin_id)
+                .or_default()
+                .push(normalized);
+        }
     }
     let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
     for (pid, paths) in by_plugin_id {
@@ -935,4 +941,40 @@ async fn refresh_sources_inner(app: &Arc<AppState>) -> Result<usize> {
     );
 
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::connect_url;
+
+    async fn mem_db() -> sea_orm::DatabaseConnection {
+        connect_url("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn libraries_by_plugin_name_dedupes_symlink_equivalent_paths() {
+        let db = mem_db().await;
+        let plugin = repo::upsert_plugin(&db, "wallpaper_engine", "")
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("Steam");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("steam-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        repo::add_library(&db, plugin.id, link.to_str().unwrap())
+            .await
+            .unwrap();
+        repo::add_library(&db, plugin.id, real.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let by_plugin = libraries_by_plugin_name(&db).await.unwrap();
+        assert_eq!(
+            by_plugin.get("wallpaper_engine").unwrap(),
+            &vec![real.to_string_lossy().to_string()],
+        );
+    }
 }

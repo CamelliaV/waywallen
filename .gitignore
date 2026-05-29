@@ -8,6 +8,8 @@ build
 .cache
 /bin
 /install/
+/install-dev/
 *.AppImage
 CMakeUserPresets.json
 /waywallen-test*.md
+/docs/plans/

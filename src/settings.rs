@@ -36,6 +36,10 @@ use crate::display::layout::{Align, FillMode, Rotation};
 /// rapid-fire UI toggles batch into a single write.
 const DEBOUNCE_WRITE: Duration = Duration::from_secs(2);
 
+fn default_true() -> bool {
+    true
+}
+
 /// Daemon-wide layout defaults applied to displays that have no
 /// `[displays.<name>]` override.
 ///
@@ -130,6 +134,10 @@ pub struct AutopauseDefaults {
     /// manager). Monitored via `org.freedesktop.login1.Session.Active`
     /// on the D-Bus system bus.
     pub pause_on_user_switch: bool,
+    /// Pause all renderers when another media player advertises
+    /// `PlaybackStatus=Playing` over MPRIS on the session bus.
+    #[serde(default = "default_true")]
+    pub pause_on_media_playing: bool,
 }
 
 impl Default for AutopauseDefaults {
@@ -139,6 +147,7 @@ impl Default for AutopauseDefaults {
             resume_ms: 500,
             pause_on_lock: true,
             pause_on_user_switch: true,
+            pause_on_media_playing: true,
         }
     }
 }
@@ -161,6 +170,10 @@ pub struct ResolvedAutopause {
 #[serde(default)]
 pub struct GlobalSettings {
     pub last_wallpaper: Option<String>,
+    /// Hide the UI on daemon cold start and let the user open it from
+    /// the tray or single-instance handoff path.
+    #[serde(default = "default_true")]
+    pub silent_startup: bool,
     /// Queue playback mode: `"sequential"` / `"shuffle"` / `"random"`.
     /// Restored on startup so the rotator resumes the same behavior.
     /// (Old configs may have this under `playlist_mode` — the alias
@@ -198,6 +211,7 @@ impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
             last_wallpaper: None,
+            silent_startup: true,
             queue_mode: "sequential".to_string(),
             rotation_secs: 0,
             layout: LayoutDefaults::default(),
@@ -600,6 +614,19 @@ impl SettingsStore {
         g.global.last_wallpaper.clone()
     }
 
+    /// Startup restore should feel like "resume whatever I last
+    /// applied" even if an older per-display key is still present in
+    /// the config. If no global apply has ever been recorded, fall
+    /// back to the per-display cascade for compatibility.
+    pub fn startup_last_wallpaper(&self, display_key: &str) -> Option<String> {
+        let g = self.inner.read().expect("settings poisoned");
+        g.global.last_wallpaper.clone().or_else(|| {
+            g.displays
+                .get(display_key)
+                .and_then(|prefs| prefs.last_wallpaper.clone())
+        })
+    }
+
     /// Snapshot just the per-display preferences (cloned). Used to
     /// expose the override map over the control plane (e.g.
     /// `DisplayInfo.layout_override` in protobuf).
@@ -872,7 +899,34 @@ mod tests {
     fn default_roundtrip() {
         let s: Settings = toml::from_str("").unwrap();
         assert!(s.global.last_wallpaper.is_none());
+        assert!(s.global.silent_startup);
+        assert!(s.global.autopause.pause_on_media_playing);
         assert!(s.plugins.is_empty());
+    }
+
+    #[test]
+    fn startup_and_media_pause_flags_roundtrip_false() {
+        let src = r#"
+[global]
+silent_startup = false
+
+[global.autopause]
+pause_on_media_playing = false
+"#;
+        let s: Settings = toml::from_str(src).unwrap();
+        assert!(!s.global.silent_startup);
+        assert!(!s.global.autopause.pause_on_media_playing);
+    }
+
+    #[test]
+    fn partial_autopause_table_keeps_media_pause_default_enabled() {
+        let src = r#"
+[global.autopause]
+mode = "full_screen"
+"#;
+        let s: Settings = toml::from_str(src).unwrap();
+        assert_eq!(s.global.autopause.mode, AutopauseMode::FullScreen);
+        assert!(s.global.autopause.pause_on_media_playing);
     }
 
     #[test]
@@ -973,6 +1027,33 @@ fillmode = "preserve_aspect_fit"
         );
         assert_eq!(
             store.resolved_last_wallpaper("DP-2").as_deref(),
+            Some("wp-global"),
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_last_wallpaper_prefers_global_then_per_display() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let store = SettingsStore::load_or_default(path).await;
+
+        store.update(|s| {
+            s.displays.insert(
+                "HDMI-A-1".into(),
+                DisplayPrefs {
+                    last_wallpaper: Some("wp-display".into()),
+                    ..Default::default()
+                },
+            );
+        });
+        assert_eq!(
+            store.startup_last_wallpaper("HDMI-A-1").as_deref(),
+            Some("wp-display"),
+        );
+
+        store.update(|s| s.global.last_wallpaper = Some("wp-global".into()));
+        assert_eq!(
+            store.startup_last_wallpaper("HDMI-A-1").as_deref(),
             Some("wp-global"),
         );
     }

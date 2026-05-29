@@ -15,6 +15,7 @@ mod event_process;
 mod events;
 mod gpu;
 mod ipc;
+mod media_monitor;
 mod model;
 mod plugin;
 mod probe;
@@ -391,6 +392,10 @@ async fn async_main() -> anyhow::Result<()> {
     // warnings; the rest of the daemon continues unaffected.
     session_monitor::spawn(router.clone(), state.shutdown_subscribe());
 
+    // MPRIS media-playback monitor. Best-effort: unsupported desktops
+    // simply leave the media pause condition false.
+    media_monitor::spawn(router.clone(), state.shutdown_subscribe());
+
     // Display infrastructure first. The UDS endpoint and (if applicable)
     // the daemon-managed display backend subprocess are queued *before*
     // any source-side work so they hit the runtime as early as
@@ -664,10 +669,15 @@ async fn async_main() -> anyhow::Result<()> {
         .store(ws_port, std::sync::atomic::Ordering::SeqCst);
     log::info!("ws port: {ws_port}");
 
-    // Stash the pre-resolved UI path and launch once at startup.
+    // Stash the pre-resolved UI path and launch once at startup unless
+    // silent startup is enabled.
     if let Some(ui_bin) = ui_bin {
         *state.ui_path.lock().unwrap() = Some(ui_bin);
-        spawn_ui(&state);
+        if state.settings.global().silent_startup {
+            log::info!("silent startup enabled; UI launch deferred to tray/DBus");
+        } else {
+            spawn_ui(&state);
+        }
     } else if !cli.no_ui {
         log::info!("waywallen-ui not found, running headless");
     }

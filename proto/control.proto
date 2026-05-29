@@ -776,6 +776,10 @@ message GlobalSettings {
 
   // Auto-rotation interval in seconds. `0` disables auto-rotation.
   uint32 rotation_secs = 11;
+
+  // When true, daemon startup keeps the UI hidden and relies on the
+  // tray/DBus entry points for later explicit opening.
+  optional bool silent_startup = 12;
 }
 
 // When to pause the wallpaper based on window state on the same
@@ -797,6 +801,8 @@ message AutopauseSettings {
   bool pause_on_lock = 3;
   // Pause when the current login session becomes inactive (user switch).
   bool pause_on_user_switch = 4;
+  // Pause when another MPRIS media player reports PlaybackStatus=Playing.
+  optional bool pause_on_media_playing = 5;
 }
 
 // One plugin's settings table. Wire format is string→string for

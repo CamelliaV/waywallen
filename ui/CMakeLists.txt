@@ -40,6 +40,15 @@ set(BUNDLE_SPEEX ON)
 set(USE_SANITIZERS OFF)
 set(USE_WINMM OFF)
 include(${CMAKE_SOURCE_DIR}/cmake/FetchDeps.cmake)
+if(NOT DEFINED QM_ICON_FONT_URL OR QM_ICON_FONT_URL STREQUAL "")
+  set(_WAYWALLEN_MATERIAL_SYMBOLS_ROUNDED
+      "/usr/share/fonts/ttf-material-symbols-variable/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf")
+  if(EXISTS "${_WAYWALLEN_MATERIAL_SYMBOLS_ROUNDED}")
+    set(QM_ICON_FONT_URL
+        "file:///usr/share/fonts/ttf-material-symbols-variable/MaterialSymbolsRounded%5BFILL,GRAD,opsz,wght%5D.ttf"
+        CACHE STRING "Material Symbols Rounded font URL for QmlMaterial icons" FORCE)
+  endif()
+endif()
 fetchdeps(${CMAKE_SOURCE_DIR}/deps.json)
 
 qt_standard_project_setup()

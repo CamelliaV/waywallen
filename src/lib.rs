@@ -5,6 +5,7 @@ pub mod error;
 pub mod events;
 pub mod gpu;
 pub mod ipc;
+pub mod media_monitor;
 pub mod model;
 pub mod plugin;
 pub mod probe;

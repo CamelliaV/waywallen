@@ -680,15 +680,34 @@ MD.Page {
                                 typescale: MD.Token.typescale.label_medium
                                 color: MD.Token.color.on_surface_variant
                             }
-                            MD.Text {
+                            RowLayout {
                                 visible: m_meta.hasPath
                                 Layout.fillWidth: true
-                                text: m_meta.shortPath(root.selectedWallpaper?.resource)
-                                typescale: MD.Token.typescale.body_medium
-                                color: MD.Token.color.on_surface
-                                elide: Text.ElideMiddle
-                                maximumLineCount: 1
-                                wrapMode: Text.NoWrap
+                                spacing: 4
+
+                                MD.Text {
+                                    Layout.fillWidth: true
+                                    text: m_meta.shortPath(root.selectedWallpaper?.resource)
+                                    typescale: MD.Token.typescale.body_medium
+                                    color: MD.Token.color.on_surface
+                                    elide: Text.ElideMiddle
+                                    maximumLineCount: 1
+                                    wrapMode: Text.NoWrap
+                                }
+
+                                MD.IconButton {
+                                    icon.name: MD.Token.icon.folder_open
+                                    mdState.size: MD.Enum.XS
+                                    onClicked: {
+                                        if (!W.Util.openContainingFolder(root.selectedWallpaper?.resource ?? ""))
+                                            W.Action.toast("Could not open folder");
+                                    }
+
+                                    MD.ToolTip {
+                                        visible: parent.hovered
+                                        text: "Open containing folder"
+                                    }
+                                }
                             }
 
                             // Resolution

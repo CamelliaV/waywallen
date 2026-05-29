@@ -44,6 +44,7 @@ public:
     Desktop     desktop() const;
 
     Q_INVOKABLE QString bbcodeToHtml(const QString& src) const;
+    Q_INVOKABLE bool    openContainingFolder(const QString& path) const;
 
     // WE wire-side color is `"r g b"` or `"r g b a"`, space-separated
     // 0-1 floats. Falls back to opaque black on malformed input.

@@ -38,6 +38,9 @@ auto autopause_to_map(const proto::AutopauseSettings& a) -> QVariantMap {
     m[u"resumeMs"_s]          = a.resumeMs();
     m[u"pauseOnLock"_s]       = a.pauseOnLock();
     m[u"pauseOnUserSwitch"_s] = a.pauseOnUserSwitch();
+    if (a.hasPauseOnMediaPlaying()) {
+        m[u"pauseOnMediaPlaying"_s] = a.pauseOnMediaPlaying();
+    }
     return m;
 }
 
@@ -47,6 +50,9 @@ auto map_to_autopause(const QVariantMap& m) -> proto::AutopauseSettings {
     a.setResumeMs(m.value(u"resumeMs"_s).toUInt());
     a.setPauseOnLock(m.value(u"pauseOnLock"_s, true).toBool());
     a.setPauseOnUserSwitch(m.value(u"pauseOnUserSwitch"_s, true).toBool());
+    if (m.contains(u"pauseOnMediaPlaying"_s)) {
+        a.setPauseOnMediaPlaying(m.value(u"pauseOnMediaPlaying"_s, true).toBool());
+    }
     return a;
 }
 
@@ -75,6 +81,9 @@ auto global_to_map(const proto::GlobalSettings& g) -> QVariantMap {
     }
     m[u"queueMode"_s]    = g.queueMode();
     m[u"rotationSecs"_s] = g.rotationSecs();
+    if (g.hasSilentStartup()) {
+        m[u"silentStartup"_s] = g.silentStartup();
+    }
     return m;
 }
 
@@ -122,6 +131,9 @@ auto map_to_global(const QVariantMap& m) -> proto::GlobalSettings {
     }
     if (m.contains(u"rotationSecs"_s)) {
         g.setRotationSecs(m.value(u"rotationSecs"_s).toUInt());
+    }
+    if (m.contains(u"silentStartup"_s)) {
+        g.setSilentStartup(m.value(u"silentStartup"_s, true).toBool());
     }
     return g;
 }

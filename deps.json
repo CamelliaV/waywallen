@@ -87,8 +87,7 @@
     "type": "git",
     "url": "https://github.com/hypengw/QmlMaterial.git",
     "x-cmake": {
-      "name": "qml_material",
-      "find_package_args": "GLOBAL"
+      "name": "qml_material"
     }
   },
   {
