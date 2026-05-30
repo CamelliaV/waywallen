@@ -453,17 +453,23 @@ async fn async_main() -> anyhow::Result<()> {
     };
 
     let display_sock_path = display::endpoint::default_socket_path();
+    let display_listener = display::endpoint::bind_listener(&display_sock_path)
+        .with_context(|| format!("prepare display endpoint {}", display_sock_path.display()))?;
     {
         let router = router.clone();
-        let sock_path = display_sock_path.clone();
         let shutdown_rx = state.shutdown_subscribe();
         let events_tx = state.events.sender();
         state
             .tasks
             .spawn_async(tasks::TaskKind::Service, "display/endpoint", async move {
-                display::endpoint::serve_with_shutdown(&sock_path, router, events_tx, shutdown_rx)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("display endpoint exited: {e}"))
+                display::endpoint::serve_bound_with_shutdown(
+                    display_listener,
+                    router,
+                    events_tx,
+                    shutdown_rx,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("display endpoint exited: {e}"))
             });
     }
     if let Some(def) = display_backend {

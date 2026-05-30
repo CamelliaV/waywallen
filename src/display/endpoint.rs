@@ -64,6 +64,20 @@ pub fn default_socket_path() -> PathBuf {
     dir.join("display.sock")
 }
 
+/// Bind the display socket before advertising daemon readiness. The KDE
+/// wallpaper plugin retries on DBus edges, not on a timer, so the daemon
+/// must not emit `Ready` until this listener is actually connectable.
+pub fn bind_listener(sock_path: &Path) -> Result<tokio::net::UnixListener> {
+    let _ = std::fs::remove_file(sock_path);
+    if let Some(parent) = sock_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let listener = tokio::net::UnixListener::bind(sock_path)
+        .with_context(|| format!("bind display socket at {}", sock_path.display()))?;
+    log::info!("display endpoint listening on {}", sock_path.display());
+    Ok(listener)
+}
+
 /// Back-compat 2-arg entry point used by integration tests that
 /// don't care about daemon-level shutdown. Internally forwards to
 /// [`serve_with_shutdown`] with a never-firing channel so the fast
@@ -87,16 +101,19 @@ pub async fn serve_with_shutdown(
     sock_path: &Path,
     router: Arc<Router>,
     events_tx: tokio::sync::broadcast::Sender<GlobalEvent>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    let listener = bind_listener(sock_path)?;
+
+    serve_bound_with_shutdown(listener, router, events_tx, shutdown_rx).await
+}
+
+pub async fn serve_bound_with_shutdown(
+    listener: tokio::net::UnixListener,
+    router: Arc<Router>,
+    events_tx: tokio::sync::broadcast::Sender<GlobalEvent>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
-    let _ = std::fs::remove_file(sock_path);
-    if let Some(parent) = sock_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let listener = tokio::net::UnixListener::bind(sock_path)
-        .with_context(|| format!("bind display socket at {}", sock_path.display()))?;
-    log::info!("display endpoint listening on {}", sock_path.display());
-
     loop {
         let accepted = tokio::select! {
             biased;
@@ -777,6 +794,32 @@ async fn forward_frame_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp_sock(tag: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("waywallen-{tag}-{}-{ts}.sock", std::process::id()))
+    }
+
+    #[tokio::test]
+    async fn bind_listener_replaces_stale_socket_and_listens() {
+        let sock = tmp_sock("endpoint-bind");
+        let _ = std::fs::remove_file(&sock);
+        std::fs::write(&sock, b"stale").expect("write stale socket placeholder");
+
+        let listener = bind_listener(&sock).expect("bind listener");
+
+        assert!(sock.exists(), "listener did not create {}", sock.display());
+        let client = UnixStream::connect(&sock).expect("connect to pre-bound listener");
+
+        drop(client);
+        drop(listener);
+        let _ = std::fs::remove_file(&sock);
+    }
 
     #[test]
     fn build_bind_event_identity() {
